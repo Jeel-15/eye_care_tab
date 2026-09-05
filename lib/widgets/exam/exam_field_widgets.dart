@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../constants/app_radius.dart';
 import '../../services/exam_masters_service.dart';
+import '../app_animations.dart';
 import 'anchored_popover.dart';
 import 'master_list_popover.dart';
 import 'sign_grid_popover.dart';
@@ -129,6 +130,10 @@ class _TextPickerFieldState extends State<TextPickerField> {
       link: _popover.link,
       child: TextFormField(
         controller: widget.controller,
+        // Only lock out the keyboard when there's a popover to open instead —
+        // if there's no master list at all, direct typing is the only way to
+        // enter a value, so it must stay editable.
+        readOnly: widget.items.isNotEmpty,
         onTap: _open,
         onChanged: (v) { widget.onChanged?.call(v); setState(() {}); },
         style: const TextStyle(fontSize: 13),
@@ -205,6 +210,10 @@ class _MasterSearchAddFieldState extends State<MasterSearchAddField> {
       link: _popover.link,
       child: TextField(
         controller: _ctrl,
+        // Only lock out the keyboard when there's a popover to open instead —
+        // if there's no master list at all, direct typing is the only way to
+        // enter a value, so it must stay editable.
+        readOnly: widget.items.isNotEmpty,
         onTap: _open,
         onSubmitted: _submitFreeText,
         decoration: InputDecoration(
@@ -289,7 +298,7 @@ class _ChipPickerFieldState extends State<ChipPickerField> {
     }
     return CompositedTransformTarget(
       link: _popover.link,
-      child: GestureDetector(
+      child: PressScaleWrapper(
         onTap: _open,
         child: Container(
           height: 38,
@@ -351,8 +360,8 @@ class FavouriteChipRow extends StatelessWidget {
             children: favourites.map((item) => Container(
                   decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: Colors.amber.shade300)),
                   child: Row(mainAxisSize: MainAxisSize.min, children: [
-                    GestureDetector(onTap: () => onTapAdd(item), child: Padding(padding: const EdgeInsets.only(left: 10, top: 5, bottom: 5, right: 4), child: Text(item.value, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.amber.shade900)))),
-                    if (onUnfavourite != null) GestureDetector(onTap: () => onUnfavourite!(item), child: Padding(padding: const EdgeInsets.only(right: 8, top: 5, bottom: 5), child: Icon(Icons.star_rounded, size: 12, color: Colors.amber.shade600))),
+                    PressScaleWrapper(onTap: () => onTapAdd(item), child: Padding(padding: const EdgeInsets.only(left: 10, top: 5, bottom: 5, right: 4), child: Text(item.value, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: Colors.amber.shade900)))),
+                    if (onUnfavourite != null) PressScaleWrapper(onTap: () => onUnfavourite!(item), child: Padding(padding: const EdgeInsets.only(right: 8, top: 5, bottom: 5), child: Icon(Icons.star_rounded, size: 12, color: Colors.amber.shade600))),
                   ]),
                 )).toList(),
           ),

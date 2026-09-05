@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
+import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -8,6 +8,8 @@ import '../models/auth_models.dart';
 import '../services/permission_service.dart';
 import '../services/user_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 import 'user_form_pane.dart';
 
 enum _PaneMode { view, add, edit }
@@ -180,27 +182,13 @@ class _UsersScreenState extends State<UsersScreen> {
         ]),
       );
     }
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (!splitView) {
-        return _selectedId != null || _paneMode != _PaneMode.view
-            ? Column(children: [
-                TextButton.icon(onPressed: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 380, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _selectedId != null || _paneMode != _PaneMode.view,
+      onBack: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 380,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -220,6 +208,7 @@ class _UsersScreenState extends State<UsersScreen> {
                 if (!_loading && _error == null) Text('$_total member${_total == 1 ? '' : 's'}', style: TextStyle(fontSize: 11, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
               ]),
               const Spacer(),
+              IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _loading ? null : () => _load(refresh: true)),
               IconButton(icon: Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary, size: 20), tooltip: 'Add User', onPressed: _openAdd),
             ]),
           ),
@@ -257,7 +246,7 @@ class _UsersScreenState extends State<UsersScreen> {
   }
 
   Widget _buildList() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 7, itemHeight: 70);
     if (_error != null) {
       return Center(
         child: Padding(
@@ -416,6 +405,7 @@ class _UserDetailView extends StatelessWidget {
     final roleColor = u.role?.parsedColor ?? AppColors.primary;
     final isActive = u.status == 'active';
     final isDoctor = u.role?.isDoctorRole == true;
+    final showPassword = PermissionService.instance.isSuper && (u.originalPassword?.isNotEmpty ?? false);
 
     return SingleChildScrollView(
       child: Column(
@@ -435,7 +425,7 @@ class _UserDetailView extends StatelessWidget {
                 Text(u.name, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.primary)),
                 const SizedBox(height: 6),
                 Wrap(spacing: 8, runSpacing: 6, children: [
-                  GestureDetector(
+                  PressScaleWrapper(
                     onTap: onToggleStatus,
                     child: _chip(isActive ? 'Active' : 'Inactive', (isActive ? AppColors.green : AppColors.textDisabled).withValues(alpha: 0.12), isActive ? AppColors.green : AppColors.textDisabled),
                   ),
@@ -456,13 +446,15 @@ class _UserDetailView extends StatelessWidget {
               _InfoRow(Icons.email_outlined, 'Email', u.email),
               _InfoRow(Icons.phone_outlined, 'Contact', u.contact.isNotEmpty ? u.contact : '—'),
               _InfoRow(Icons.login_rounded, 'Last Login', u.lastLoginAt ?? 'Never'),
+              if (showPassword) _PasswordInfoRow(u.originalPassword!),
             ]);
             if (!isDoctor) return contact;
             final doctor = _infoCard(bg: AppColors.blueA12, title: 'Doctor Details', items: [
               _InfoRow(Icons.medical_information_outlined, 'Type', u.doctorType == 'secondary' ? 'Secondary (Optometrist)' : 'Primary (Ophthalmologist)'),
               _InfoRow(Icons.badge_outlined, 'Registration No.', u.registrationNo ?? '—'),
               _InfoRow(Icons.work_history_outlined, 'Experience', u.experienceYears != null ? '${u.experienceYears} yrs' : '—'),
-              _InfoRow(Icons.receipt_long_outlined, 'FOC Permission', u.focPermission ? 'Allowed' : 'Not allowed'),
+              // FOC disabled at client's request — see foc_screen.dart.
+              // _InfoRow(Icons.receipt_long_outlined, 'FOC Permission', u.focPermission ? 'Allowed' : 'Not allowed'),
             ]);
             if (!wide) return Column(children: [contact, const SizedBox(height: 12), doctor]);
             return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: contact), const SizedBox(width: 12), Expanded(child: doctor)]);
@@ -488,7 +480,7 @@ class _UserDetailView extends StatelessWidget {
         ]),
       );
 
-  Widget _infoCard({required Color bg, required String title, required List<_InfoRow> items}) {
+  Widget _infoCard({required Color bg, required String title, required List<Widget> items}) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.md)),
@@ -496,6 +488,36 @@ class _UserDetailView extends StatelessWidget {
         Text(title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textSecondary, letterSpacing: 0.3)),
         const SizedBox(height: 10),
         ...items,
+      ]),
+    );
+  }
+}
+
+class _PasswordInfoRow extends StatelessWidget {
+  final String password;
+
+  const _PasswordInfoRow(this.password);
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(children: [
+        Icon(Icons.key_rounded, size: 15, color: AppColors.textSecondary),
+        const SizedBox(width: 8),
+        Text('Password: ', style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
+        Expanded(child: Text(password, style: TextStyle(fontSize: 12, color: AppColors.textPrimary, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis)),
+        InkWell(
+          borderRadius: BorderRadius.circular(6),
+          onTap: () {
+            Clipboard.setData(ClipboardData(text: password));
+            showAppSnackBar(context, 'Password copied.', isSuccess: true);
+          },
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(Icons.copy_rounded, size: 14, color: AppColors.primaryA45),
+          ),
+        ),
       ]),
     );
   }

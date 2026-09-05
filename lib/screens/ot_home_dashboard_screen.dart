@@ -6,6 +6,7 @@ import '../models/ot_booking_models.dart';
 import '../services/ot_booking_service.dart';
 import '../services/permission_service.dart';
 import '../widgets/app_error_state.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet OT Home Dashboard — reached via the "OT Dashboard" quick-action
 /// tile, not a direct rail entry. Web's sidebar links directly to "OT
@@ -64,7 +65,7 @@ class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 2, itemHeight: 120)
             : _error != null
                 ? AppErrorState(message: _error!, onRetry: _load)
                 : _buildBody(p),

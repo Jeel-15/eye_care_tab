@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../constants/app_radius.dart';
 import '../../services/exam_masters_service.dart';
+import '../app_animations.dart';
 
 /// Searchable master-value picker used for Vision/Axis/NCT (plain list/grid,
 /// no favourites split) and O/E + Fundus fields (Favourites/All split with a
@@ -65,7 +66,7 @@ class _MasterListPopoverState extends State<MasterListPopover> {
           child: Row(children: [
             Expanded(child: Text(widget.title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.primary))),
             if (widget.current.isNotEmpty)
-              GestureDetector(onTap: () { widget.onSelect(''); widget.onClose(); }, child: Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red.shade600, fontWeight: FontWeight.w700))),
+              PressScaleWrapper(onTap: () { widget.onSelect(''); widget.onClose(); }, child: Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red.shade600, fontWeight: FontWeight.w700))),
             const SizedBox(width: 4),
             IconButton(icon: const Icon(Icons.close_rounded, size: 16), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: widget.onClose),
           ]),
@@ -103,7 +104,7 @@ class _MasterListPopoverState extends State<MasterListPopover> {
         itemBuilder: (_, i) {
           final it = items[i];
           final sel = it.value == widget.current;
-          return GestureDetector(
+          return PressScaleWrapper(
             onTap: () { widget.onSelect(it.value); widget.onClose(); },
             child: Container(
               decoration: BoxDecoration(color: sel ? AppColors.primary : Colors.grey.shade100, borderRadius: BorderRadius.circular(6), border: Border.all(color: sel ? AppColors.primary : Colors.grey.shade300)),

@@ -4,6 +4,7 @@ import '../constants/app_radius.dart';
 import '../services/ot_type_master_service.dart';
 import '../models/ot_inventory_models.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet OT Types master — corrected-permission route (Round 3.5).
 /// Ported from eye_care_app/lib/screens/ot_type_master_screen.dart.
@@ -93,6 +94,8 @@ class _OtTypeMasterScreenState extends State<OtTypeMasterScreen> {
         Icon(Icons.label_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('OT Types', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -103,7 +106,7 @@ class _OtTypeMasterScreenState extends State<OtTypeMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 60);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No OT types yet.', style: const TextStyle(color: AppColors.textDisabled)));

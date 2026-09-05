@@ -1,3 +1,7 @@
+// FOC (Free of Charge) feature disabled at the client's request — kept
+// commented out (not deleted) in case it's needed again in future, mirroring
+// how the web developer handled the same request on the web app.
+/*
 class FocPatient {
   final int id;
   final String patientCode;
@@ -112,3 +116,4 @@ class FocListResult {
     );
   }
 }
+*/

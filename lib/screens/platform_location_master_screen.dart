@@ -205,10 +205,13 @@ class _CountriesTabState extends State<_CountriesTab> with AutomaticKeepAliveCli
                         itemCount: _items.length,
                         itemBuilder: (ctx, i) {
                           final c = _items[i];
-                          return _LocationCard(title: c.name, subtitle: c.defaultTimezone, badge: '${c.statesCount} states', badgeColor: AppColors.primary, isActive: c.isActive, onEdit: () => _showForm(item: c), onDelete: () => _delete(c), onToggle: () async {
-                            await _svc.toggleCountry(c.id);
-                            _load(page: _page);
-                          });
+                          return AnimatedListItem(
+                            index: i,
+                            child: _LocationCard(title: c.name, subtitle: c.defaultTimezone, badge: '${c.statesCount} states', badgeColor: AppColors.primary, isActive: c.isActive, onEdit: () => _showForm(item: c), onDelete: () => _delete(c), onToggle: () async {
+                              await _svc.toggleCountry(c.id);
+                              _load(page: _page);
+                            }),
+                          );
                         },
                       ),
                     ),
@@ -332,10 +335,13 @@ class _StatesTabState extends State<_StatesTab> with AutomaticKeepAliveClientMix
                         itemCount: _items.length,
                         itemBuilder: (ctx, i) {
                           final s = _items[i];
-                          return _LocationCard(title: s.name, subtitle: s.countryName ?? '', isActive: s.isActive, onEdit: () => _showForm(item: s), onDelete: () => _delete(s), onToggle: () async {
-                            await _svc.toggleState(s.id);
-                            _load(page: _page);
-                          });
+                          return AnimatedListItem(
+                            index: i,
+                            child: _LocationCard(title: s.name, subtitle: s.countryName ?? '', isActive: s.isActive, onEdit: () => _showForm(item: s), onDelete: () => _delete(s), onToggle: () async {
+                              await _svc.toggleState(s.id);
+                              _load(page: _page);
+                            }),
+                          );
                         },
                       ),
                     ),
@@ -459,10 +465,13 @@ class _DistrictsTabState extends State<_DistrictsTab> with AutomaticKeepAliveCli
                         itemCount: _items.length,
                         itemBuilder: (ctx, i) {
                           final d = _items[i];
-                          return _LocationCard(title: d.name, subtitle: d.stateName ?? '', isActive: d.isActive, onEdit: () => _showForm(item: d), onDelete: () => _delete(d), onToggle: () async {
-                            await _svc.toggleDistrict(d.id);
-                            _load(page: _page);
-                          });
+                          return AnimatedListItem(
+                            index: i,
+                            child: _LocationCard(title: d.name, subtitle: d.stateName ?? '', isActive: d.isActive, onEdit: () => _showForm(item: d), onDelete: () => _delete(d), onToggle: () async {
+                              await _svc.toggleDistrict(d.id);
+                              _load(page: _page);
+                            }),
+                          );
                         },
                       ),
                     ),
@@ -603,10 +612,13 @@ class _CitiesTabState extends State<_CitiesTab> with AutomaticKeepAliveClientMix
                         itemBuilder: (ctx, i) {
                           final c = _items[i];
                           final sub = [if (c.stateName != null) c.stateName!, if (c.districtName != null) c.districtName!].join(' › ');
-                          return _LocationCard(title: c.name, subtitle: sub, isActive: c.isActive, onEdit: () => _showForm(item: c), onDelete: () => _delete(c), onToggle: () async {
-                            await _svc.toggleCity(c.id);
-                            _load(page: _page);
-                          });
+                          return AnimatedListItem(
+                            index: i,
+                            child: _LocationCard(title: c.name, subtitle: sub, isActive: c.isActive, onEdit: () => _showForm(item: c), onDelete: () => _delete(c), onToggle: () async {
+                              await _svc.toggleCity(c.id);
+                              _load(page: _page);
+                            }),
+                          );
                         },
                       ),
                     ),

@@ -9,6 +9,7 @@ import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_pagination_bar.dart';
+import '../widgets/skeleton.dart';
 
 /// Doctor's own OT patient drill-down — net new (web pull 2026-08-07,
 /// "Phase 2"): two actions once a patient's ward consult is pending —
@@ -164,7 +165,7 @@ class _DoctorOtListScreenState extends State<DoctorOtListScreen> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 6, itemHeight: 80)
             : _error != null
                 ? AppErrorState(message: _error!, onRetry: _load)
                 : _buildBody(),
@@ -182,7 +183,9 @@ class _DoctorOtListScreenState extends State<DoctorOtListScreen> {
       itemBuilder: (_, i) {
         final item = _items[i];
         final pending = _isConsultPending(item);
-        return Container(
+        return AnimatedListItem(
+          index: i,
+          child: Container(
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(12), border: Border.all(color: AppColors.primaryA08)),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -219,6 +222,7 @@ class _DoctorOtListScreenState extends State<DoctorOtListScreen> {
               style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: AppColors.textSecondary),
             ),
           ]),
+          ),
         );
       },
     );

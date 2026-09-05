@@ -4,9 +4,12 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
+import '../services/base_service.dart' show StaleRecordException;
+import '../services/permission_service.dart';
 import '../services/user_service.dart';
 import '../utils/phone_rules.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 enum UserFormMode { add, edit }
 
@@ -61,6 +64,9 @@ class _UserFormPaneState extends State<UserFormPane> {
   bool _clearProfilePhoto = false;
 
   bool get _isDoctorRole => _selectedRole?.isDoctorRole == true;
+  // Password is shown plain/pre-filled (web parity) only for Hospital Admins —
+  // the backend only ever returns `originalPassword` to an admin viewer anyway.
+  bool get _isAdmin => PermissionService.instance.isSuper;
 
   @override
   void initState() {
@@ -115,6 +121,12 @@ class _UserFormPaneState extends State<UserFormPane> {
     _expYrsCtrl.text = u.experienceYears?.toString() ?? '';
     _existingSignatureUrl = u.signatureUrl;
     _existingPhotoUrl = u.profilePhotoUrl;
+
+    // Admin viewers get the actual current password pre-filled, matching web.
+    if (_isAdmin && (u.originalPassword?.isNotEmpty ?? false)) {
+      _passwordCtrl.text = u.originalPassword!;
+      _passwordConfCtrl.text = u.originalPassword!;
+    }
     setState(() {});
   }
 
@@ -125,7 +137,7 @@ class _UserFormPaneState extends State<UserFormPane> {
     final file = File(picked.path);
     final size = await file.length();
     if (size > 20 * 1024) {
-      if (mounted) showAppSnackBar(context, 'Image must be under 20 KB. Please choose a smaller/more compressed image.');
+      if (mounted) showAppSnackBar(context, 'Image must be under 20 KB. Please choose a smaller/more compressed image.', isError: true);
       return;
     }
     setState(() {
@@ -142,7 +154,7 @@ class _UserFormPaneState extends State<UserFormPane> {
   Future<void> _save() async {
     if (!_formKey.currentState!.validate()) return;
     if (_selectedRole == null) {
-      showAppSnackBar(context, 'Please select a role.');
+      showAppSnackBar(context, 'Please select a role.', isError: true);
       return;
     }
     setState(() => _saving = true);
@@ -167,6 +179,7 @@ class _UserFormPaneState extends State<UserFormPane> {
           clearSignature: _clearSignature,
           profilePhoto: _profilePhotoFile,
           clearProfilePhoto: _clearProfilePhoto,
+          expectedUpdatedAt: widget.editUser!.updatedAt,
         );
       } else {
         saved = await UserService.instance.createUser(
@@ -189,6 +202,10 @@ class _UserFormPaneState extends State<UserFormPane> {
       if (!mounted) return;
       setState(() => _saving = false);
       widget.onSaved(saved);
+    } on StaleRecordException catch (e) {
+      if (!mounted) return;
+      setState(() => _saving = false);
+      await showStaleRecordDialog(context, e.humanMessage, widget.onCancel);
     } catch (e) {
       if (!mounted) return;
       setState(() => _saving = false);
@@ -212,7 +229,7 @@ class _UserFormPaneState extends State<UserFormPane> {
   @override
   Widget build(BuildContext context) {
     if (_loadingForm) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 5, itemHeight: 60);
     }
     if (_formError != null) {
       return Center(
@@ -315,14 +332,14 @@ class _UserFormPaneState extends State<UserFormPane> {
             label: 'SECURITY',
             children: [
               _row2(
-                _field(_isEdit ? 'New Password (leave blank to keep)' : 'Password *', _passwordField(_passwordCtrl, _showPassword, () => setState(() => _showPassword = !_showPassword), hint: _isEdit ? 'Enter new password to change' : 'Minimum 8 characters', validator: (v) {
-                  if (!_isEdit && (v == null || v.isEmpty)) return 'Password is required';
+                _field(_isAdmin ? 'Password *' : (_isEdit ? 'New Password (leave blank to keep)' : 'Password *'), _passwordField(_passwordCtrl, _showPassword, () => setState(() => _showPassword = !_showPassword), hint: _isAdmin ? 'Minimum 8 characters' : (_isEdit ? 'Enter new password to change' : 'Minimum 8 characters'), forceVisible: _isAdmin, validator: (v) {
+                  if ((!_isEdit || _isAdmin) && (v == null || v.isEmpty)) return 'Password is required';
                   if (v != null && v.isNotEmpty && v.length < 8) return 'Password must be at least 8 characters';
                   return null;
                 })),
-                _field(_isEdit ? 'Confirm New Password' : 'Confirm Password *', _passwordField(_passwordConfCtrl, _showConfirm, () => setState(() => _showConfirm = !_showConfirm), hint: 'Re-enter password', validator: (v) {
+                _field(_isAdmin ? 'Confirm Password *' : (_isEdit ? 'Confirm New Password' : 'Confirm Password *'), _passwordField(_passwordConfCtrl, _showConfirm, () => setState(() => _showConfirm = !_showConfirm), hint: 'Re-enter password', forceVisible: _isAdmin, validator: (v) {
                   if (_passwordCtrl.text.isNotEmpty && v != _passwordCtrl.text) return 'Passwords do not match';
-                  if (!_isEdit && (v == null || v.isEmpty)) return 'Please confirm password';
+                  if ((!_isEdit || _isAdmin) && (v == null || v.isEmpty)) return 'Please confirm password';
                   return null;
                 })),
               ),
@@ -346,19 +363,23 @@ class _UserFormPaneState extends State<UserFormPane> {
                 })),
               ),
               _field('Registration Number', _styledField(controller: _regNoCtrl, hint: 'Medical council registration no.'), fullWidth: true),
-              Container(
-                margin: const EdgeInsets.only(bottom: 14),
-                decoration: BoxDecoration(color: AppColors.primaryA05, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA10)),
-                child: SwitchListTile(
-                  title: Text('FOC Permission', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: AppColors.primary)),
-                  subtitle: Text('Allow this doctor to mark visits as free of charge', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                  value: _focPerm,
-                  onChanged: (v) => setState(() => _focPerm = v),
-                  activeThumbColor: AppColors.primary,
-                  dense: true,
-                  contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
-                ),
-              ),
+              // FOC Permission toggle disabled at client's request — see
+              // foc_screen.dart. _focPerm keeps whatever value the user
+              // already had and is still sent on save unchanged; it's just
+              // no longer settable from this form.
+              // Container(
+              //   margin: const EdgeInsets.only(bottom: 14),
+              //   decoration: BoxDecoration(color: AppColors.primaryA05, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA10)),
+              //   child: SwitchListTile(
+              //     title: Text('FOC Permission', style: TextStyle(fontWeight: FontWeight.w700, fontSize: 14, color: AppColors.primary)),
+              //     subtitle: Text('Allow this doctor to mark visits as free of charge', style: TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+              //     value: _focPerm,
+              //     onChanged: (v) => setState(() => _focPerm = v),
+              //     activeThumbColor: AppColors.primary,
+              //     dense: true,
+              //     contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 4),
+              //   ),
+              // ),
               Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Expanded(child: _imageUploadCard(label: 'Profile Photo', existingUrl: _clearProfilePhoto ? null : _existingPhotoUrl, pickedFile: _profilePhotoFile, onPick: () => _pickImage(false), onClear: () => setState(() {
                   _profilePhotoFile = null;
@@ -447,18 +468,18 @@ class _UserFormPaneState extends State<UserFormPane> {
     );
   }
 
-  Widget _passwordField(TextEditingController ctrl, bool visible, VoidCallback onToggle, {required String hint, required String? Function(String?) validator}) {
+  Widget _passwordField(TextEditingController ctrl, bool visible, VoidCallback onToggle, {required String hint, required String? Function(String?) validator, bool forceVisible = false}) {
     return TextFormField(
       controller: ctrl,
-      obscureText: !visible,
+      obscureText: forceVisible ? false : !visible,
       validator: validator,
       style: TextStyle(fontSize: 14, color: AppColors.primary, fontWeight: FontWeight.w600),
-      decoration: _inputDeco(hint, suffix: IconButton(icon: Icon(visible ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 18, color: AppColors.textSecondary), onPressed: onToggle)),
+      decoration: _inputDeco(hint, suffix: forceVisible ? null : IconButton(icon: Icon(visible ? Icons.visibility_off_rounded : Icons.visibility_rounded, size: 18, color: AppColors.textSecondary), onPressed: onToggle)),
     );
   }
 
   Widget _buildRolePicker() {
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: _pickRole,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
@@ -518,7 +539,7 @@ class _UserFormPaneState extends State<UserFormPane> {
       children: [
         Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
         const SizedBox(height: 6),
-        GestureDetector(
+        PressScaleWrapper(
           onTap: onPick,
           child: Container(
             height: 100,
@@ -537,7 +558,7 @@ class _UserFormPaneState extends State<UserFormPane> {
         if (hasImage)
           Padding(
             padding: const EdgeInsets.only(top: 4),
-            child: GestureDetector(onTap: onClear, child: Text('Remove', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.red))),
+            child: PressScaleWrapper(onTap: onClear, child: Text('Remove', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.red))),
           ),
       ],
     );

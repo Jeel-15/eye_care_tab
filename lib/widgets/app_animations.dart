@@ -197,13 +197,53 @@ void showAppSnackBar(
       : isSuccess
           ? AppColors.green
           : AppColors.orange;
+  final icon = isError
+      ? Icons.error_outline_rounded
+      : isSuccess
+          ? Icons.check_circle_outline_rounded
+          : Icons.info_outline_rounded;
   ScaffoldMessenger.of(context).showSnackBar(
     SnackBar(
-      content: Text(message),
+      content: Row(
+        children: [
+          Icon(icon, color: Colors.white, size: 20),
+          const SizedBox(width: 10),
+          Expanded(child: Text(message)),
+        ],
+      ),
       backgroundColor: color,
       behavior: SnackBarBehavior.floating,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
       duration: duration,
+    ),
+  );
+}
+
+/// Shown when a save is rejected because the record changed elsewhere
+/// (another platform/tab) since this form loaded it — see
+/// ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5. The only way to safely
+/// reapply the user's edit is against fresh data, so [onReload] should close
+/// the form and prompt the list to refresh (e.g. an `onCancel` callback for
+/// an embedded pane, or `Navigator.pop(true)` for a pushed route).
+Future<void> showStaleRecordDialog(BuildContext context, String message, VoidCallback onReload) {
+  return showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (ctx) => AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      icon: Icon(Icons.sync_problem_rounded, color: AppColors.orange, size: 32),
+      title: const Text('Record Changed'),
+      content: Text(message),
+      actions: [
+        ElevatedButton(
+          onPressed: () {
+            Navigator.of(ctx).pop();
+            onReload();
+          },
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+          child: const Text('OK, Reload'),
+        ),
+      ],
     ),
   );
 }

@@ -5,6 +5,8 @@ import '../constants/app_radius.dart';
 import '../services/ot_inventory_service.dart';
 import '../models/ot_inventory_models.dart';
 import '../widgets/app_animations.dart';
+import '../utils/currency_format.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Lens Inventory master (Round 3 Phase 7) — stock-tracked lens
 /// master. Ported from eye_care_app/lib/screens/ot_lens_inventory_master_screen.dart.
@@ -150,9 +152,9 @@ class _OtLensInventoryMasterScreenState extends State<OtLensInventoryMasterScree
               ]),
               const SizedBox(height: 12),
               Row(children: [
-                Expanded(child: TextFormField(controller: mrpCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'MRP *', errorText: mrpErr, prefixText: '₹', border: const OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: mrpCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'MRP *', errorText: mrpErr, prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
                 const SizedBox(width: 10),
-                Expanded(child: TextFormField(controller: purchaseCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: const InputDecoration(labelText: 'Purchase Cost', prefixText: '₹', border: OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: purchaseCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'Purchase Cost', prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
               ]),
               const SizedBox(height: 12),
               TextFormField(controller: supplierCtrl, decoration: const InputDecoration(labelText: 'Supplier', border: OutlineInputBorder())),
@@ -185,6 +187,8 @@ class _OtLensInventoryMasterScreenState extends State<OtLensInventoryMasterScree
         Icon(Icons.inventory_2_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('Lens Inventory', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -195,7 +199,7 @@ class _OtLensInventoryMasterScreenState extends State<OtLensInventoryMasterScree
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 80);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No lens stock yet.', style: const TextStyle(color: AppColors.textDisabled)));
@@ -211,7 +215,7 @@ class _OtLensInventoryMasterScreenState extends State<OtLensInventoryMasterScree
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(item.lensName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                Text('${item.lensCode} · ${item.type}${item.power != null && item.power!.isNotEmpty ? ' · ${item.power}D' : ''} · MRP ₹${item.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary)),
+                Text('${item.lensCode} · ${item.type}${item.power != null && item.power!.isNotEmpty ? ' · ${item.power}D' : ''} · MRP ${currentCurrencySymbol()}${item.mrp.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary)),
               ]),
             ),
             Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: _stockColor(item.availableStock).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.sm)), child: Text('${item.availableStock} in stock', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: _stockColor(item.availableStock)))),

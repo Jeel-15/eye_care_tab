@@ -9,6 +9,7 @@ import '../utils/app_decorations.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Plans & Pricing — single scrollable page (embedded, no own
 /// Scaffold/AppBar since it's rail content). Edit-pricing uses a Dialog
@@ -16,6 +17,10 @@ import '../widgets/app_section_header.dart';
 /// dialog convention established since Phase 5. Business logic
 /// (load/update, discount math already computed server-side) ported
 /// unchanged from eye_care_app/lib/screens/platform_plans_screen.dart.
+// Hardcoded ₹ here is intentional, not a currency-parity gap — mirrors
+// web's own deliberate INR-only SaaS/plan billing design (see
+// LOCATION_CURRENCY_PARITY_PRD.md Phase 5). Only hospital-facing screens
+// (patient billing, OT, dashboards) use the per-tenant currency.
 class PlatformPlansScreen extends StatefulWidget {
   final PlatformAdmin admin;
 
@@ -63,7 +68,7 @@ class _PlatformPlansScreenState extends State<PlatformPlansScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 4, itemHeight: 100);
     if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
     final d = _data!;
     return RefreshIndicator(
@@ -245,7 +250,7 @@ class _EditPlanDialogState extends State<_EditPlanDialog> {
       builder: (_) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text('Add Feature', style: AppTextStyles.headingSmall),
-        content: TextField(controller: ctrl, autofocus: true, decoration: const InputDecoration(hintText: 'Feature description')),
+        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Feature description')),
         actions: [
           TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
           TextButton(

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../utils/date_format.dart';
@@ -14,6 +13,8 @@ import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_pagination_bar.dart';
 import '../widgets/app_search_bar.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 import '../widgets/status_badge.dart';
 
 // Matches web's `optional($appointment->appointment_date)->format('d M Y')`
@@ -117,28 +118,13 @@ class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _paneMode != _PaneMode.list
-            ? Column(children: [
-                TextButton.icon(onPressed: _cancelForm, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 420, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode != _PaneMode.list,
+      onBack: _cancelForm,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 420,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -153,6 +139,7 @@ class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
             Icon(Icons.event_note_rounded, color: AppColors.primary, size: 20),
             const SizedBox(width: 8),
             const Expanded(child: Text('OT Appointments', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+            IconButton(onPressed: _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
             IconButton(onPressed: _openAdd, icon: Icon(Icons.add_circle_rounded, color: AppColors.primary, size: 26), tooltip: 'New Appointment'),
           ]),
         ),
@@ -194,7 +181,7 @@ class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 90);
     if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
     if (_items.isEmpty) return AppEmptyState(message: 'No appointments found.', icon: Icons.event_note_rounded, onRefresh: _load);
 
@@ -204,12 +191,15 @@ class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (_, i) {
         final item = _items[i];
-        return _AppointmentListTile(
-          item: item,
-          selected: _paneMode == _PaneMode.edit && _editingItem?.id == item.id,
-          onTap: () => _openEdit(item),
-          onConfirm: item.status == 'booked' ? () => _confirm(item) : null,
-          onCancel: (item.status == 'booked' || item.status == 'confirmed') ? () => _cancel(item) : null,
+        return AnimatedListItem(
+          index: i,
+          child: _AppointmentListTile(
+            item: item,
+            selected: _paneMode == _PaneMode.edit && _editingItem?.id == item.id,
+            onTap: () => _openEdit(item),
+            onConfirm: item.status == 'booked' ? () => _confirm(item) : null,
+            onCancel: (item.status == 'booked' || item.status == 'confirmed') ? () => _cancel(item) : null,
+          ),
         );
       },
     );
@@ -618,7 +608,7 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
       const SizedBox(height: 16),
       Expanded(
         child: _loadingForm
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 5, itemHeight: 60)
             : _formError != null
                 ? Center(
                     child: Padding(

@@ -10,6 +10,7 @@ class DashboardData {
   final int myPrimaryPending;
   final int mySecondaryPending;
   final int todayPatients;
+  final int pendingExams;
   final int primaryQueueCount;
   final int secondaryQueueCount;
   final int todayWalkin;
@@ -22,12 +23,23 @@ class DashboardData {
   final int otOperated;
   final int otPending;
   final int totalStaff;
+  final int totalDoctors;
+  final int totalReceptions;
+  final int todayPrimary;
+  final int todaySecondary;
+  final int otTotalToday;
   final List<QueuePatient> primaryQueue;
   final List<ReceptionistStat> receptionists;
   final WaitThresholds waitThresholds;
   final ReceptionistStats? receptionistStats;
   final List<DoctorCard> doctorCards;
   final int? pendingShareRequestsCount;
+  final int? accountantPendingCount;
+  final int? accountantRefundsCount;
+  final int? accountantCompletedCount;
+  final int? wardPendingCount;
+  final int? otAssistantPendingCount;
+  final int? dischargePendingCount;
 
   const DashboardData({
     this.subscriptionDaysLeft,
@@ -38,6 +50,7 @@ class DashboardData {
     this.myPrimaryPending = 0,
     this.mySecondaryPending = 0,
     required this.todayPatients,
+    this.pendingExams = 0,
     required this.primaryQueueCount,
     required this.secondaryQueueCount,
     required this.todayWalkin,
@@ -50,12 +63,23 @@ class DashboardData {
     required this.otOperated,
     required this.otPending,
     required this.totalStaff,
+    this.totalDoctors = 0,
+    this.totalReceptions = 0,
+    this.todayPrimary = 0,
+    this.todaySecondary = 0,
+    this.otTotalToday = 0,
     required this.primaryQueue,
     required this.receptionists,
     required this.waitThresholds,
     this.receptionistStats,
     this.doctorCards = const [],
     this.pendingShareRequestsCount,
+    this.accountantPendingCount,
+    this.accountantRefundsCount,
+    this.accountantCompletedCount,
+    this.wardPendingCount,
+    this.otAssistantPendingCount,
+    this.dischargePendingCount,
   });
 
   factory DashboardData.fromJson(Map<String, dynamic> json) {
@@ -69,6 +93,7 @@ class DashboardData {
       myPrimaryPending: data['my_primary_pending'] as int? ?? 0,
       mySecondaryPending: data['my_secondary_pending'] as int? ?? 0,
       todayPatients: data['today_patients'] as int? ?? 0,
+      pendingExams: data['pending_exams'] as int? ?? 0,
       primaryQueueCount: data['primary_queue_count'] as int? ?? 0,
       secondaryQueueCount: data['secondary_queue_count'] as int? ?? 0,
       todayWalkin: data['today_walkin'] as int? ?? 0,
@@ -81,6 +106,11 @@ class DashboardData {
       otOperated: data['ot_operated'] as int? ?? 0,
       otPending: data['ot_pending'] as int? ?? 0,
       totalStaff: data['total_staff'] as int? ?? 0,
+      totalDoctors: data['total_doctors'] as int? ?? 0,
+      totalReceptions: data['total_receptions'] as int? ?? 0,
+      todayPrimary: data['today_primary'] as int? ?? 0,
+      todaySecondary: data['today_secondary'] as int? ?? 0,
+      otTotalToday: data['ot_total_today'] as int? ?? 0,
       primaryQueue: (data['primary_queue'] as List<dynamic>? ?? [])
           .map((e) => QueuePatient.fromJson(e as Map<String, dynamic>))
           .toList(),
@@ -97,6 +127,12 @@ class DashboardData {
           .map((e) => DoctorCard.fromJson(e as Map<String, dynamic>))
           .toList(),
       pendingShareRequestsCount: data['pending_share_requests_count'] as int?,
+      accountantPendingCount: data['accountant_pending_count'] as int?,
+      accountantRefundsCount: data['accountant_refunds_count'] as int?,
+      accountantCompletedCount: data['accountant_completed_count'] as int?,
+      wardPendingCount: data['ward_pending_count'] as int?,
+      otAssistantPendingCount: data['ot_assistant_pending_count'] as int?,
+      dischargePendingCount: data['discharge_pending_count'] as int?,
     );
   }
 }

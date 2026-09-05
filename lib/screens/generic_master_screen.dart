@@ -3,6 +3,7 @@ import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/simple_master_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet generic master editor — Pattern A (list, inline add/edit dialog).
 /// Covers every simple {value, is_favourite, is_seeded} master (~26 types:
@@ -129,7 +130,7 @@ class _GenericMasterScreenState extends State<GenericMasterScreen> {
           content: SizedBox(
             width: 360,
             child: Column(mainAxisSize: MainAxisSize.min, children: [
-              TextFormField(controller: ctrl, autofocus: true, decoration: InputDecoration(labelText: 'Value', errorText: fieldError, border: const OutlineInputBorder())),
+              TextFormField(controller: ctrl, decoration: InputDecoration(labelText: 'Value', errorText: fieldError, border: const OutlineInputBorder())),
               if (widget.hasFavourite)
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -158,6 +159,8 @@ class _GenericMasterScreenState extends State<GenericMasterScreen> {
           Icon(widget.icon, color: widget.accentColor, size: 20),
           const SizedBox(width: 10),
           Expanded(child: Text(widget.title, style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+          IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+          const SizedBox(width: 4),
           ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
         ]),
         const SizedBox(height: 14),
@@ -172,7 +175,7 @@ class _GenericMasterScreenState extends State<GenericMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 60, padding: EdgeInsets.zero);
     if (_error != null) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -193,21 +196,24 @@ class _GenericMasterScreenState extends State<GenericMasterScreen> {
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (_, i) {
         final item = items[i];
-        return Container(
-          padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
-          child: Row(children: [
-            Container(width: 28, height: 28, alignment: Alignment.center, decoration: BoxDecoration(color: widget.accentColor.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)), child: Text('${i + 1}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: widget.accentColor))),
-            const SizedBox(width: 12),
-            Expanded(child: Text(item.value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
-            if (widget.hasFavourite) IconButton(icon: Icon(item.isFavourite ? Icons.star_rounded : Icons.star_border_rounded, size: 20, color: item.isFavourite ? AppColors.orange : const Color(0xFFCBD5E1)), onPressed: () => _toggleFav(item)),
-            if (item.isSeeded)
-              const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Icon(Icons.lock_outline_rounded, size: 18, color: AppColors.textDisabled))
-            else ...[
-              IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
-              IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),
-            ],
-          ]),
+        return AnimatedListItem(
+          index: i,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(12, 4, 8, 4),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
+            child: Row(children: [
+              Container(width: 28, height: 28, alignment: Alignment.center, decoration: BoxDecoration(color: widget.accentColor.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(8)), child: Text('${i + 1}', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: widget.accentColor))),
+              const SizedBox(width: 12),
+              Expanded(child: Text(item.value, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
+              if (widget.hasFavourite) IconButton(icon: Icon(item.isFavourite ? Icons.star_rounded : Icons.star_border_rounded, size: 20, color: item.isFavourite ? AppColors.orange : const Color(0xFFCBD5E1)), onPressed: () => _toggleFav(item)),
+              if (item.isSeeded)
+                const Padding(padding: EdgeInsets.symmetric(horizontal: 8), child: Icon(Icons.lock_outline_rounded, size: 18, color: AppColors.textDisabled))
+              else ...[
+                IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
+                IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),
+              ],
+            ]),
+          ),
         );
       },
     );

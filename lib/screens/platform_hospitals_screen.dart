@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/app_text_styles.dart';
@@ -15,6 +14,7 @@ import '../widgets/app_pagination_bar.dart';
 import '../widgets/app_search_bar.dart';
 import '../widgets/app_section_header.dart';
 import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 import '../widgets/status_badge.dart';
 import 'platform_hospital_form_screen.dart';
 
@@ -24,6 +24,10 @@ import 'platform_hospital_form_screen.dart';
 /// Business logic (search/filter/paginate, lifecycle actions) ported
 /// unchanged from eye_care_app/lib/screens/platform_hospitals_screen.dart +
 /// platform_hospital_detail_screen.dart.
+// Hardcoded ₹ here is intentional, not a currency-parity gap — mirrors
+// web's own deliberate INR-only SaaS/plan billing design (see
+// LOCATION_CURRENCY_PARITY_PRD.md Phase 5). Only hospital-facing screens
+// (patient billing, OT, dashboards) use the per-tenant currency.
 class PlatformHospitalsScreen extends StatefulWidget {
   final PlatformAdmin admin;
 
@@ -99,20 +103,13 @@ class _PlatformHospitalsScreenState extends State<PlatformHospitalsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (!splitView) {
-        return _selectedId != null || _paneMode != _PaneMode.view
-            ? Column(children: [
-                TextButton.icon(onPressed: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [SizedBox(width: 380, child: listPane), const SizedBox(width: 20), Expanded(child: detailPane)]);
-    });
+    return SplitPaneScaffold(
+      showDetail: _selectedId != null || _paneMode != _PaneMode.view,
+      onBack: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 380,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -132,6 +129,7 @@ class _PlatformHospitalsScreenState extends State<PlatformHospitalsScreen> {
                 if (_total > 0) Text('$_total hospitals', style: TextStyle(fontSize: 11, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
               ]),
               const Spacer(),
+              IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: () => _load()),
               IconButton(icon: Icon(Icons.add_business_rounded, color: AppColors.primary, size: 22), tooltip: 'New Hospital', onPressed: _openAdd),
             ]),
           ),
@@ -404,7 +402,7 @@ class _HospitalDetailPaneState extends State<_HospitalDetailPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 4, itemHeight: 110);
     if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
     final t = _tenant!;
     if (widget.editMode) {

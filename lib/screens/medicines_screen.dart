@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../constants/app_colors.dart';
@@ -9,6 +11,8 @@ import '../services/medicine_service.dart';
 import '../utils/medicines_tab.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../utils/currency_format.dart';
 
 BoxDecoration _cardDeco() => BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(14), border: Border.all(color: AppColors.primaryA10), boxShadow: [BoxShadow(color: AppColors.primaryA06, blurRadius: 8, offset: const Offset(0, 2))]);
 
@@ -171,7 +175,7 @@ class _SimpleMedMasterTabState extends State<_SimpleMedMasterTab> with Automatic
       return AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text(item == null ? 'Add ${widget.fieldLabel}' : 'Edit ${widget.fieldLabel}'),
-        content: SizedBox(width: 360, child: TextField(controller: ctrl, autofocus: true, decoration: InputDecoration(labelText: widget.fieldLabel, border: const OutlineInputBorder()), onSubmitted: (_) => save())),
+        content: SizedBox(width: 360, child: TextField(controller: ctrl, decoration: InputDecoration(labelText: widget.fieldLabel, border: const OutlineInputBorder()), onSubmitted: (_) => save())),
         actions: [
           TextButton(onPressed: saving ? null : () => Navigator.pop(dCtx), child: const Text('Cancel')),
           ElevatedButton(onPressed: saving ? null : save, style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white), child: saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Save')),
@@ -289,7 +293,7 @@ class _MedicinesCatalogTabState extends State<_MedicinesCatalogTab> with Automat
     final types = _result?.types ?? [];
     final dosages = _result?.dosages ?? [];
     if (types.isEmpty) {
-      showAppSnackBar(context, 'Load medicines list first');
+      showAppSnackBar(context, 'Load medicines list first', isError: true);
       return;
     }
     int? typeId = item?.medicineTypeId;
@@ -356,7 +360,7 @@ class _MedicinesCatalogTabState extends State<_MedicinesCatalogTab> with Automat
                 const SizedBox(height: 12),
                 TextFormField(controller: composition, maxLines: 2, decoration: const InputDecoration(labelText: 'Composition', border: OutlineInputBorder())),
                 const SizedBox(height: 12),
-                TextFormField(controller: price, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: const InputDecoration(labelText: 'Price (₹)', border: OutlineInputBorder())),
+                TextFormField(controller: price, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: InputDecoration(labelText: 'Price (${currentCurrencySymbol()})', border: const OutlineInputBorder())),
               ]),
             ),
           ),
@@ -368,6 +372,13 @@ class _MedicinesCatalogTabState extends State<_MedicinesCatalogTab> with Automat
       );
     }));
     name.dispose(); duration.dispose(); qty.dispose(); company.dispose(); composition.dispose(); price.dispose();
+  }
+
+  Future<void> _openImportDialog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => _ImportMedicinesDialog(onImported: () => _load(page: _page)),
+    );
   }
 
   Future<void> _confirmDelete(MedItem item) async {
@@ -394,6 +405,8 @@ class _MedicinesCatalogTabState extends State<_MedicinesCatalogTab> with Automat
             decoration: InputDecoration(hintText: 'Search name or company…', prefixIcon: const Icon(Icons.search_rounded, size: 20), suffixIcon: _searchCtrl.text.isNotEmpty ? IconButton(icon: const Icon(Icons.close_rounded, size: 18), onPressed: () { _searchCtrl.clear(); setState(() => _page = 1); _load(page: 1); }) : null, filled: true, fillColor: Colors.white, isDense: true, contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12), border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.primaryA12))),
           ),
         ),
+        const SizedBox(width: 10),
+        OutlinedButton.icon(onPressed: _openImportDialog, icon: const Icon(Icons.file_upload_outlined, size: 16), label: const Text('CSV Upload'), style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA30))),
         const SizedBox(width: 10),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add Medicine'), style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white)),
       ]),
@@ -426,6 +439,152 @@ class _MedicinesCatalogTabState extends State<_MedicinesCatalogTab> with Automat
   }
 }
 
+// ── CSV/Excel bulk import ────────────────────────────────────────────────────
+// See CSV_MEDICINE_IMPORT_PARITY_PLAN.md — mirrors web's import modal.
+
+class _ImportMedicinesDialog extends StatefulWidget {
+  final VoidCallback onImported;
+
+  const _ImportMedicinesDialog({required this.onImported});
+
+  @override
+  State<_ImportMedicinesDialog> createState() => _ImportMedicinesDialogState();
+}
+
+class _ImportMedicinesDialogState extends State<_ImportMedicinesDialog> {
+  PlatformFile? _picked;
+  bool _importing = false;
+  bool _downloadingSample = false;
+  MedicineImportResult? _result;
+
+  Future<void> _pickFile() async {
+    final file = await FilePicker.pickFile(type: FileType.custom, allowedExtensions: ['csv', 'xls', 'xlsx']);
+    if (file == null) return;
+    setState(() { _picked = file; _result = null; });
+  }
+
+  Future<void> _downloadSample() async {
+    setState(() => _downloadingSample = true);
+    try {
+      await MedicineService.instance.downloadSampleFile();
+    } catch (e) {
+      if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
+    } finally {
+      if (mounted) setState(() => _downloadingSample = false);
+    }
+  }
+
+  Future<void> _import() async {
+    final path = _picked?.path;
+    if (path == null) return;
+    setState(() { _importing = true; _result = null; });
+    try {
+      final result = await MedicineService.instance.importMedicines(File(path));
+      if (!mounted) return;
+      setState(() { _importing = false; _result = result; });
+      if (result.imported > 0) widget.onImported();
+    } catch (e) {
+      if (!mounted) return;
+      setState(() => _importing = false);
+      showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+      title: const Text('CSV Upload'),
+      content: SizedBox(
+        width: 460,
+        child: SingleChildScrollView(
+          child: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(color: const Color(0xFFEFF6FF), border: Border.all(color: const Color(0xFFBFDBFE)), borderRadius: BorderRadius.circular(10)),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Required Excel Format', style: TextStyle(fontWeight: FontWeight.w800, color: Color(0xFF1D4ED8), fontSize: 12.5)),
+                const SizedBox(height: 8),
+                Wrap(spacing: 6, runSpacing: 6, children: [
+                  for (final c in ['Medicine Name', 'Medicine Type', 'Dosage', 'Duration', 'Qty']) _csvChip(c, required: true),
+                  for (final c in ['Company', 'Composition', 'Price']) _csvChip(c, required: false),
+                ]),
+                const SizedBox(height: 8),
+                const Text('Blue = required, gray = optional. Medicine Type & Dosage must match existing entries (case-insensitive). Duplicate names are skipped.', style: TextStyle(fontSize: 11, color: Color(0xFF6B7280))),
+                const SizedBox(height: 8),
+                InkWell(
+                  onTap: _downloadingSample ? null : _downloadSample,
+                  child: Row(mainAxisSize: MainAxisSize.min, children: [
+                    _downloadingSample
+                        ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2))
+                        : const Icon(Icons.download_rounded, size: 14, color: Color(0xFF1D4ED8)),
+                    const SizedBox(width: 4),
+                    const Text('Download a sample file', style: TextStyle(fontSize: 12, color: Color(0xFF1D4ED8), fontWeight: FontWeight.w700)),
+                  ]),
+                ),
+              ]),
+            ),
+            const SizedBox(height: 14),
+            const Text('Select File (.xlsx, .xls, .csv)', style: TextStyle(fontWeight: FontWeight.w600, fontSize: 12.5)),
+            const SizedBox(height: 6),
+            OutlinedButton.icon(
+              onPressed: _pickFile,
+              icon: const Icon(Icons.attach_file_rounded, size: 16),
+              label: Text(_picked?.name ?? 'Choose File', overflow: TextOverflow.ellipsis),
+              style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA30), alignment: Alignment.centerLeft, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12)),
+            ),
+            if (_result != null) ...[
+              const SizedBox(height: 14),
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: _result!.imported > 0 ? const Color(0xFFF0FDF4) : const Color(0xFFFEF2F2),
+                  border: Border.all(color: _result!.imported > 0 ? const Color(0xFFBBF7D0) : const Color(0xFFFECACA)),
+                  borderRadius: BorderRadius.circular(10),
+                ),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                  Text('Imported ${_result!.imported}, skipped ${_result!.skipped}.', style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 12.5)),
+                  if (_result!.errors.isNotEmpty) ...[
+                    const SizedBox(height: 6),
+                    ConstrainedBox(
+                      constraints: const BoxConstraints(maxHeight: 140),
+                      child: SingleChildScrollView(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: _result!.errors.map((e) => Padding(padding: const EdgeInsets.only(top: 2), child: Text('• $e', style: const TextStyle(fontSize: 11, color: Color(0xFF6B7280))))).toList(),
+                        ),
+                      ),
+                    ),
+                  ],
+                ]),
+              ),
+            ],
+          ]),
+        ),
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Close')),
+        ElevatedButton.icon(
+          onPressed: (_picked == null || _importing) ? null : _import,
+          icon: _importing
+              ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+              : const Icon(Icons.upload_rounded, size: 16),
+          label: Text(_importing ? 'Importing…' : 'Import Now'),
+          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
+        ),
+      ],
+    );
+  }
+
+  Widget _csvChip(String label, {required bool required}) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
+        decoration: BoxDecoration(color: required ? const Color(0xFFDBEAFE) : const Color(0xFFF3F4F6), borderRadius: BorderRadius.circular(4)),
+        child: Text(label, style: TextStyle(fontSize: 10.5, color: required ? const Color(0xFF1D4ED8) : const Color(0xFF6B7280))),
+      );
+}
+
 class _MedCard extends StatelessWidget {
   final MedItem item;
   final VoidCallback onEdit;
@@ -440,7 +599,7 @@ class _MedCard extends StatelessWidget {
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisAlignment: MainAxisAlignment.center, children: [
         Row(children: [
           Expanded(child: Text(item.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, overflow: TextOverflow.ellipsis))),
-          if (item.price != null) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: AppColors.green.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.xl)), child: Text('₹${item.price!.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.green))),
+          if (item.price != null) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: AppColors.green.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.xl)), child: Text('${currentCurrencySymbol()}${item.price!.toStringAsFixed(2)}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.green))),
           const SizedBox(width: 6),
           IconButton(icon: const Icon(Icons.edit_outlined, size: 17, color: AppColors.orange), onPressed: onEdit),
           IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 17, color: AppColors.red), onPressed: onDelete),
@@ -533,16 +692,15 @@ class _MedicineGroupsTabState extends State<_MedicineGroupsTab> with AutomaticKe
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    return LayoutBuilder(builder: (context, c) {
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (c.maxWidth < AppBreakpoints.medium) {
-        return (_selectedId != null || _creatingNew)
-            ? Column(children: [TextButton.icon(onPressed: () => setState(() { _selectedId = null; _creatingNew = false; }), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to Groups')), Expanded(child: detailPane)])
-            : listPane;
-      }
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [SizedBox(width: 340, child: listPane), const SizedBox(width: 16), Expanded(child: detailPane)]);
-    });
+    return SplitPaneScaffold(
+      showDetail: _selectedId != null || _creatingNew,
+      onBack: () => setState(() { _selectedId = null; _creatingNew = false; }),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      backLabel: 'Back to Groups',
+      listPaneWidth: 340,
+      gap: 16,
+    );
   }
 
   Widget _buildListPane() {
@@ -555,6 +713,7 @@ class _MedicineGroupsTabState extends State<_MedicineGroupsTab> with AutomaticKe
           padding: const EdgeInsets.fromLTRB(14, 14, 14, 8),
           child: Row(children: [
             Expanded(child: Text('Prescription Groups', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.primary))),
+            IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary), tooltip: 'Refresh', onPressed: _loading ? null : () => _load(page: _page)),
             IconButton(icon: Icon(Icons.add_circle_rounded, color: AppColors.primary), onPressed: () => setState(() { _creatingNew = true; _selectedId = null; })),
           ]),
         ),
@@ -611,7 +770,7 @@ class _MedicineGroupsTabState extends State<_MedicineGroupsTab> with AutomaticKe
         future: MedicineService.instance.fetchGroup(group.id),
         key: ValueKey(group.id),
         builder: (context, snap) {
-          if (!snap.hasData) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+          if (!snap.hasData) return const AppSkeletonList(count: 5, itemHeight: 60, padding: EdgeInsets.zero);
           return _GroupFormPane(existing: snap.data, onSaved: () => _load(page: _page), onCancel: () => setState(() => _selectedId = null));
         },
       ),
@@ -752,7 +911,7 @@ class _GroupFormPaneState extends State<_GroupFormPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loadingFormData) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loadingFormData) return const AppSkeletonList(count: 5, itemHeight: 60, padding: EdgeInsets.zero);
     if (_loadError != null) {
       return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_loadError!), const SizedBox(height: 10), ElevatedButton(onPressed: _loadFormData, child: const Text('Retry'))]));
     }

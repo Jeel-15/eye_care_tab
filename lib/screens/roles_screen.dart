@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -9,6 +8,8 @@ import '../services/permission_service.dart';
 import '../services/roles_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Roles & Permissions module — Pattern A (role list left, permission
 /// editor right) replacing mobile's list + full-screen editor route. The
@@ -108,27 +109,13 @@ class _RolesScreenState extends State<RolesScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (!splitView) {
-        return _paneMode == _PaneMode.editor
-            ? Column(children: [
-                TextButton.icon(onPressed: _cancelEditor, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 360, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode == _PaneMode.editor,
+      onBack: _cancelEditor,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 360,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -156,7 +143,7 @@ class _RolesScreenState extends State<RolesScreen> {
   }
 
   Widget _buildList() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 70);
     if (_error != null) {
       return Center(
         child: Padding(
@@ -359,7 +346,7 @@ class _RoleEditorPaneState extends State<_RoleEditorPane> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 70);
     if (_error != null) {
       return Center(
         child: Padding(

@@ -7,6 +7,7 @@ import '../models/auth_models.dart';
 import '../services/onboarding_service.dart';
 import '../services/profile_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Profile screen — centered max-width form (personal settings don't
 /// need full rail-content width) instead of mobile's AppBar+footer sandwich.
@@ -112,7 +113,7 @@ class _ProfileScreenState extends State<ProfileScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 4, itemHeight: 100);
     if (_error != null) return _buildError();
     return Center(
       child: ConstrainedBox(

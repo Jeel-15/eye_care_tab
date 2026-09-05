@@ -8,6 +8,8 @@ import '../config/app_config.dart';
 import '../config/client_theme.dart';
 import '../constants/app_colors.dart';
 import '../models/auth_models.dart';
+import 'access_guard.dart';
+import 'base_service.dart' show PlanAccessBlockedException;
 
 class AuthService {
   AuthService._();
@@ -20,6 +22,16 @@ class AuthService {
 
   // In-memory token cache — eliminates SharedPreferences I/O on every request.
   String? _tokenCache;
+
+  // In-memory hospital cache — same pattern as _tokenCache. Lets deeply
+  // nested screens (that don't receive HospitalInfo via constructor, e.g.
+  // OT module screens pushed several levels deep) read the current
+  // hospital's currency synchronously without threading a new param through
+  // every intermediate screen. Populated on login and on the first
+  // getStoredHospital() read after app restart. See
+  // LOCATION_CURRENCY_PARITY_PRD.md Phase 4.
+  HospitalInfo? _hospitalCache;
+  HospitalInfo? get cachedHospital => _hospitalCache;
 
   Map<String, String> get _baseHeaders => {
         'Accept': 'application/json',
@@ -170,6 +182,15 @@ class AuthService {
         final data = body['data'] as Map<String, dynamic>;
         final user = UserInfo.fromJson(data['user'] as Map<String, dynamic>);
         await _saveUser(user);
+        // /auth/me also returns the tenant's current hospital info (name,
+        // currency, timezone) — previously dropped here, so an existing
+        // logged-in session (resumed via refreshSession(), not a fresh
+        // /login) never picked up currency changes made after the user's
+        // last real login. See LOCATION_CURRENCY_PARITY_PRD.md.
+        final hospitalJson = data['hospital'] as Map<String, dynamic>?;
+        if (hospitalJson != null) {
+          await _saveHospital(HospitalInfo.fromJson(hospitalJson));
+        }
         return user;
       }
     }
@@ -177,6 +198,22 @@ class AuthService {
     if (response.statusCode == 401) {
       await _clearAll();
       return null;
+    }
+
+    // A blocked-tenant 403 must NOT be treated like a transient network
+    // failure — splash's caller falls back to cached user data on any other
+    // exception here, which would silently let a plan-expired user straight
+    // into the dashboard. See ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 2.
+    if (response.statusCode == 403) {
+      Map<String, dynamic>? body;
+      try {
+        body = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {}
+      final blockedMessage = body?['error'] as String?;
+      if (blockedMessage != null) {
+        AccessGuard.instance.showAccessBlocked(blockedMessage);
+        throw PlanAccessBlockedException(blockedMessage);
+      }
     }
 
     throw Exception('Session refresh failed (HTTP ${response.statusCode})');
@@ -242,7 +279,9 @@ class AuthService {
     final prefs = await SharedPreferences.getInstance();
     final raw = prefs.getString(_hospitalKey);
     if (raw == null) return null;
-    return HospitalInfo.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    final hospital = HospitalInfo.fromJson(jsonDecode(raw) as Map<String, dynamic>);
+    _hospitalCache = hospital;
+    return hospital;
   }
 
   Future<bool> get hasSession async => (await getStoredToken()) != null;
@@ -261,6 +300,7 @@ class AuthService {
   }
 
   Future<void> _saveHospital(HospitalInfo hospital) async {
+    _hospitalCache = hospital;
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_hospitalKey, jsonEncode(hospital.toJson()));
   }

@@ -1,5 +1,8 @@
+// FOC (Free of Charge) feature disabled at the client's request — kept
+// commented out (not deleted) in case it's needed again in future, mirroring
+// how the web developer handled the same request on the web app.
+/*
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -9,6 +12,9 @@ import '../services/foc_service.dart';
 import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../utils/currency_format.dart';
 
 /// Tablet FOC (Free of Charge) module — Pattern A (list + detail split)
 /// replacing mobile's inline-action card list. The list pane stays scannable
@@ -81,7 +87,7 @@ class _FocScreenState extends State<FocScreen> {
               child: Column(mainAxisSize: MainAxisSize.min, children: [
                 _dialogField(patientIdCtrl, 'Patient ID', hint: 'Enter patient ID', keyboardType: TextInputType.number, validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null),
                 const SizedBox(height: 12),
-                _dialogField(focFeeCtrl, 'FOC Fee (₹)', hint: '0.00', keyboardType: const TextInputType.numberWithOptions(decimal: true), validator: (v) {
+                _dialogField(focFeeCtrl, 'FOC Fee (${currentCurrencySymbol()})', hint: '0.00', keyboardType: const TextInputType.numberWithOptions(decimal: true), validator: (v) {
                   if (v == null || v.trim().isEmpty) return 'Required';
                   if (double.tryParse(v.trim()) == null) return 'Enter valid amount';
                   return null;
@@ -174,7 +180,7 @@ class _FocScreenState extends State<FocScreen> {
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: const Text('Accept FOC Request'),
-        content: Text('Accept FOC for ${foc.patient?.fullName ?? "Patient #${foc.patientId}"}?\nFee of ₹${foc.focFee.toStringAsFixed(2)} will be waived.'),
+        content: Text('Accept FOC for ${foc.patient?.fullName ?? "Patient #${foc.patientId}"}?\nFee of ${currentCurrencySymbol()}${foc.focFee.toStringAsFixed(2)} will be waived.'),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: AppColors.green, foregroundColor: Colors.white), onPressed: () => Navigator.pop(ctx, true), child: const Text('Accept')),
@@ -206,27 +212,13 @@ class _FocScreenState extends State<FocScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (!splitView) {
-        return _selectedId != null
-            ? Column(children: [
-                TextButton.icon(onPressed: () => setState(() => _selectedId = null), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 380, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _selectedId != null,
+      onBack: () => setState(() => _selectedId = null),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 380,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -285,7 +277,7 @@ class _FocScreenState extends State<FocScreen> {
   }
 
   Widget _buildList() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 70);
     if (_error != null) {
       return Center(
         child: Padding(
@@ -309,7 +301,10 @@ class _FocScreenState extends State<FocScreen> {
       separatorBuilder: (_, _) => Divider(height: 1, color: AppColors.primaryA08),
       itemBuilder: (_, i) {
         final foc = _result!.items[i];
-        return _FocListTile(foc: foc, selected: foc.id == _selectedId, onTap: () => setState(() => _selectedId = foc.id));
+        return AnimatedListItem(
+          index: i,
+          child: _FocListTile(foc: foc, selected: foc.id == _selectedId, onTap: () => setState(() => _selectedId = foc.id)),
+        );
       },
     );
   }
@@ -384,7 +379,7 @@ class _FocListTile extends StatelessWidget {
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(foc.patient?.fullName ?? 'Patient #${foc.patientId}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary), overflow: TextOverflow.ellipsis),
-                Text('₹${foc.focFee.toStringAsFixed(2)}${foc.doctor != null ? ' · Dr. ${foc.doctor!.name}' : ''}', style: TextStyle(fontSize: 11, color: AppColors.primaryA55), overflow: TextOverflow.ellipsis),
+                Text('${currentCurrencySymbol()}${foc.focFee.toStringAsFixed(2)}${foc.doctor != null ? ' · Dr. ${foc.doctor!.name}' : ''}', style: TextStyle(fontSize: 11, color: AppColors.primaryA55), overflow: TextOverflow.ellipsis),
               ]),
             ),
             Container(
@@ -432,7 +427,7 @@ class _FocDetailView extends StatelessWidget {
                 Wrap(spacing: 8, runSpacing: 6, children: [
                   Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4), decoration: BoxDecoration(color: statusBg, borderRadius: BorderRadius.circular(AppRadius.xl)), child: Text(statusLabel, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: statusColor))),
                   if (foc.patient != null && foc.patient!.patientCode.isNotEmpty) _chip(foc.patient!.patientCode, AppColors.primaryA10, AppColors.primary),
-                  _chip('₹${foc.focFee.toStringAsFixed(2)}', AppColors.orangeA12, AppColors.orange),
+                  _chip('${currentCurrencySymbol()}${foc.focFee.toStringAsFixed(2)}', AppColors.orangeA12, AppColors.orange),
                 ]),
               ]),
             ),
@@ -520,3 +515,4 @@ class _InfoRow extends StatelessWidget {
     );
   }
 }
+*/

@@ -2,7 +2,9 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import '../constants/app_colors.dart';
 import '../models/auth_models.dart';
+import '../services/access_guard.dart';
 import '../services/auth_service.dart';
+import '../services/base_service.dart' show PlanAccessBlockedException;
 import '../services/permission_service.dart';
 import '../utils/circular_reveal_route.dart';
 import '../widgets/pulsing_pupil_loader.dart';
@@ -76,6 +78,11 @@ class _SplashScreenState extends State<SplashScreen>
 
     try {
       _sessionResult = await AuthService.instance.refreshSession();
+    } on PlanAccessBlockedException {
+      // AccessGuard has already navigated to the Access Restricted screen —
+      // don't fall back to cached user data, that would let a blocked
+      // account straight into the dashboard.
+      _sessionResult = null;
     } catch (_) {
       _sessionResult = await AuthService.instance.getStoredUser();
     }
@@ -84,6 +91,10 @@ class _SplashScreenState extends State<SplashScreen>
   Future<void> _onSplashDone() async {
     await _sessionFuture;
     if (!mounted) return;
+
+    // AccessGuard has already taken over navigation (blocked-tenant or
+    // session-expired) — don't fight it with our own pushReplacement below.
+    if (AccessGuard.instance.isBlocking) return;
 
     await _exitCtrl.forward();
     if (!mounted) return;

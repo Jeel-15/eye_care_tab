@@ -8,12 +8,19 @@ import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/auth_service.dart';
 import '../services/permission_service.dart';
-import '../utils/app_route.dart';
-import 'platform_login_screen.dart';
 import 'tablet_shell.dart';
+// Super Admin access disabled in the apps at the client's request — see
+// _onLogoTap() below. Kept commented (not deleted) in case it's needed
+// again in future.
+// import '../utils/app_route.dart';
+// import 'platform_login_screen.dart';
 
 class LoginScreen extends StatefulWidget {
-  const LoginScreen({super.key});
+  // Pre-fills the error banner — used when AccessGuard force-navigates here
+  // after a 401 (expired session) so the reason is visible immediately.
+  final String? initialError;
+
+  const LoginScreen({super.key, this.initialError});
 
   @override
   State<LoginScreen> createState() => _LoginScreenState();
@@ -51,6 +58,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
   @override
   void initState() {
     super.initState();
+    _errorMessage = widget.initialError;
     _setupAnimations();
   }
 
@@ -130,12 +138,15 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     _logoTapTimer?.cancel();
     _logoTapCount++;
 
-    if (_logoTapCount >= 5) {
-      _logoTapCount = 0;
-      HapticFeedback.mediumImpact();
-      Navigator.push(context, appRoute(const PlatformLoginScreen()));
-      return;
-    }
+    // Super Admin access disabled in the apps at the client's request —
+    // Super Admin is now handled only from the web. Kept commented (not
+    // deleted) in case it's needed again in future.
+    // if (_logoTapCount >= 5) {
+    //   _logoTapCount = 0;
+    //   HapticFeedback.mediumImpact();
+    //   Navigator.push(context, appRoute(const PlatformLoginScreen()));
+    //   return;
+    // }
 
     if (_logoTapCount >= 3) HapticFeedback.selectionClick();
 

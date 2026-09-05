@@ -10,9 +10,12 @@ import '../models/ot_appointment_models.dart';
 import '../models/patient_models.dart';
 import '../services/dashboard_service.dart';
 import '../services/permission_service.dart';
+import '../utils/currency_format.dart';
 import '../utils/app_route.dart';
+import '../utils/refreshable.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/skeleton.dart';
 import 'opd_bill_screen.dart';
 import 'patient_checkin_screen.dart';
 import 'patient_form_screen.dart';
@@ -39,7 +42,7 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
-class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProviderStateMixin {
+class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProviderStateMixin implements Refreshable {
   DashboardData? _data;
   bool _loading = true;
   bool _refreshing = false;
@@ -65,6 +68,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     _timer?.cancel();
     super.dispose();
   }
+
+  @override
+  Future<void> refreshSilently() => _fetch();
 
   Future<void> _fetch() async {
     if (_data == null) {
@@ -132,7 +138,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
   @override
   Widget build(BuildContext context) {
     if (_loading && _data == null) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 5, itemHeight: 90);
     }
     if (_error != null && _data == null) {
       return _buildError();
@@ -214,10 +220,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                 if (d.isReceptionist) ...[
                   const SizedBox(height: 16),
                   _TodayPatientsWidget(user: widget.user, hospital: widget.hospital, onNavigate: widget.onNavigate),
-                ],
-                if (!d.isDoctor && d.doctorCards.isNotEmpty) ...[
-                  const SizedBox(height: 16),
-                  _buildDoctorCardsStrip(d.doctorCards),
                 ],
               ],
             );
@@ -392,8 +394,59 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   // ── Stats grid (wraps to fit — replaces mobile's horizontal scroll rows) ─
 
+  /// Web swaps the generic "OT Appointment" card for a role-specific
+  /// pending-count card for Accountant/Ward Management/OT Assistant/
+  /// Discharge Counter — mirrors `Hospital\DashboardController.php:386-460`
+  /// + `index.blade.php`'s `@if/@elseif` chain exactly (each field is null
+  /// unless that role is logged in, so this is a plain first-match swap).
+  /// See DASHBOARD_PARITY_FIX_PLAN.md Phase 4. Tablet uses a `Wrap` (not a
+  /// scroll `Row` like mobile), so no leading `SizedBox` separators needed.
+  List<Widget> _otSlotCards(DashboardData d) {
+    if (d.accountantPendingCount != null) {
+      return [
+        _statCard(label: 'Pending Patients', value: '${d.accountantPendingCount}', icon: Icons.hourglass_bottom_rounded, iconBg: AppColors.orange, badge: 'OT payment', rawCount: d.accountantPendingCount),
+        _statCard(label: 'Refunds', value: '${d.accountantRefundsCount ?? 0}', icon: Icons.replay_rounded, iconBg: const Color(0xFFC0392B), badge: 'Surgery refused', rawCount: d.accountantRefundsCount),
+        _statCard(label: 'Completed', value: '${d.accountantCompletedCount ?? 0}', icon: Icons.check_circle_rounded, iconBg: AppColors.green, badge: 'Verified+', rawCount: d.accountantCompletedCount),
+      ];
+    }
+    if (d.wardPendingCount != null) {
+      return [_statCard(label: 'Pending Patient', value: '${d.wardPendingCount}', icon: Icons.hourglass_bottom_rounded, iconBg: AppColors.orange, badge: 'Ward entry', rawCount: d.wardPendingCount)];
+    }
+    if (d.otAssistantPendingCount != null) {
+      return [_statCard(label: 'Pending Patient', value: '${d.otAssistantPendingCount}', icon: Icons.hourglass_bottom_rounded, iconBg: AppColors.orange, badge: 'Ready for OT', rawCount: d.otAssistantPendingCount)];
+    }
+    if (d.dischargePendingCount != null) {
+      return [_statCard(label: 'Pending Patient', value: '${d.dischargePendingCount}', icon: Icons.hourglass_bottom_rounded, iconBg: AppColors.orange, badge: 'Discharge', rawCount: d.dischargePendingCount)];
+    }
+    return [_statCard(label: 'OT Appointment', value: '${d.otToday}', icon: Icons.medical_services_rounded, iconBg: AppColors.teal, badge: '${d.otOperated} confirmed', rawCount: d.otToday)];
+  }
+
+  /// Hospital Admin's own 8-card set — web gives the tenant's Hospital
+  /// Admin (`is_super`) a completely different, simpler dashboard than
+  /// every other role (`index.blade.php:1610-1725`, comment: "Hospital
+  /// admin: only these 8 cards"). Mutually exclusive with the rest of
+  /// `_buildStatsGrid`'s card list — see DASHBOARD_PARITY_FIX_PLAN.md
+  /// Phase 7.
+  List<Widget> _hospitalAdminCards(DashboardData d) => [
+        _statCard(label: 'Total Today Patients', value: '${d.todayPatients}', icon: Icons.people_alt_rounded, iconBg: AppColors.primary, rawCount: d.todayPatients),
+        _statCard(label: 'Total Collection', value: _fmtRupee(d.revenueToday), icon: Icons.account_balance_wallet_rounded, iconBg: AppColors.green),
+        PressScaleWrapper(
+          onTap: () => widget.onNavigate('reports'),
+          child: _statCard(label: 'Report', value: '—', icon: Icons.bar_chart_rounded, iconBg: AppColors.secondary, badge: 'Summary'),
+        ),
+        _statCard(label: 'Doctor', value: '${d.totalDoctors}', icon: Icons.person_rounded, iconBg: AppColors.blue, rawCount: d.totalDoctors),
+        _statCard(label: 'Reception', value: '${d.totalReceptions}', icon: Icons.headset_mic_rounded, iconBg: AppColors.teal, rawCount: d.totalReceptions),
+        _statCard(label: 'Primary / Second', value: '${d.todayPrimary}/${d.todaySecondary}', icon: Icons.remove_red_eye_rounded, iconBg: AppColors.teal),
+        _statCard(label: 'OT Total', value: '${d.otTotalToday}', icon: Icons.local_hospital_rounded, iconBg: AppColors.purple, rawCount: d.otTotalToday),
+        if (d.pendingShareRequestsCount != null)
+          _statCard(label: 'Incoming Requests', value: '${d.pendingShareRequestsCount}', icon: Icons.send_rounded, iconBg: AppColors.secondary, rawCount: d.pendingShareRequestsCount),
+      ];
+
   Widget _buildStatsGrid(DashboardData d) {
     final p = PermissionService.instance;
+    if (p.isSuper) {
+      return Wrap(spacing: 12, runSpacing: 12, children: _hospitalAdminCards(d));
+    }
     final cards = <Widget>[
       _statCard(
         label: d.isOtDoctor ? 'My OT Today' : d.isDoctor ? 'My Patients' : "Today's Patients",
@@ -405,29 +458,26 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       ),
       if (!d.isOtDoctor) ...[
         _statCard(
-          label: 'Primary Queue',
-          value: '${d.isDoctor ? d.myPrimaryPending : d.primaryQueueCount}',
-          icon: Icons.groups_rounded,
-          iconBg: AppColors.green,
-          badge: 'Waiting',
-          rawCount: d.isDoctor ? d.myPrimaryPending : d.primaryQueueCount,
+          label: 'Pending Exams',
+          value: '${d.pendingExams}',
+          icon: Icons.pending_actions_rounded,
+          iconBg: AppColors.orange,
+          badge: 'In queue',
+          rawCount: d.pendingExams,
         ),
         _statCard(
-          label: 'Secondary Queue',
-          value: '${d.isDoctor ? d.mySecondaryPending : d.secondaryQueueCount}',
-          icon: Icons.group_add_rounded,
-          iconBg: AppColors.orange,
-          badge: 'Post-Exam',
-          rawCount: d.isDoctor ? d.mySecondaryPending : d.secondaryQueueCount,
+          label: 'OPD Queue',
+          value: '${d.isDoctor ? d.myPrimaryPending : d.primaryQueueCount}/${d.isDoctor ? d.mySecondaryPending : d.secondaryQueueCount}',
+          icon: Icons.groups_rounded,
+          iconBg: AppColors.teal,
+          badge: 'Primary / Secondary',
         ),
       ],
-      _statCard(label: 'OT Today', value: '${d.otToday}', icon: Icons.medical_services_rounded, iconBg: AppColors.teal, badge: '${d.otOperated} done', rawCount: d.otToday),
-      _statCard(label: 'Walk-ins', value: '${d.todayWalkin}', icon: Icons.directions_walk_rounded, iconBg: AppColors.primary, badge: 'Walkin', rawCount: d.todayWalkin),
-      _statCard(label: 'Phone Appts', value: '${d.todayPhone}', icon: Icons.phone_in_talk_rounded, iconBg: AppColors.secondary, badge: 'Phone', rawCount: d.todayPhone),
+      ..._otSlotCards(d),
+      if (!d.isReceptionist)
+        _statCard(label: 'Registrations', value: '${d.todayRegistrations}', icon: Icons.fact_check_rounded, iconBg: AppColors.primary, badge: 'W:${d.todayWalkin} P:${d.todayPhone}', rawCount: d.todayRegistrations),
       if (!d.isDoctor && p.can(Perm.reportsView))
         _statCard(label: 'Revenue Today', value: _fmtRupee(d.revenueToday), icon: Icons.currency_rupee_rounded, iconBg: AppColors.green, badge: '${_fmtRupee(d.revenueMonth)} mo'),
-      if (p.isSuper)
-        _statCard(label: 'Total Staff', value: '${d.totalStaff}', icon: Icons.badge_rounded, iconBg: AppColors.primary, badge: 'Active', rawCount: d.totalStaff),
       if (d.isReceptionist && d.receptionistStats != null) ..._receptionistStatCards(d.receptionistStats!),
     ];
 
@@ -524,7 +574,7 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
                       style: const TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.green)),
                 ),
                 const Spacer(),
-                GestureDetector(
+                PressScaleWrapper(
                   onTap: () => widget.onNavigate('queue'),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
@@ -708,68 +758,6 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
     );
   }
 
-  // ── Doctor cards strip ───────────────────────────────────────────────
-
-  Widget _buildDoctorCardsStrip(List<DoctorCard> cards) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const AppSectionHeader(title: 'Doctors Today'),
-        Wrap(
-          spacing: 10,
-          runSpacing: 10,
-          children: cards.asMap().entries.map((entry) {
-            final i = entry.key;
-            final c = entry.value;
-            return AnimatedListItem(
-              index: i,
-              child: Container(
-                width: 168,
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(14),
-                  boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 8, offset: const Offset(0, 2))],
-                ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.10), shape: BoxShape.circle),
-                        child: Icon(Icons.person_rounded, size: 14, color: AppColors.primary),
-                      ),
-                      const SizedBox(width: 6),
-                      Expanded(child: Text(c.name, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary), overflow: TextOverflow.ellipsis)),
-                    ]),
-                    const SizedBox(height: 10),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        _doctorStat('${c.assignedToday}', 'Total', AppColors.primary),
-                        _doctorStat('${c.primaryCount}', 'Primary', AppColors.green),
-                        _doctorStat('${c.secondaryCount}', 'Secondary', AppColors.orange),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ],
-    );
-  }
-
-  Widget _doctorStat(String value, String label, Color color) {
-    return Column(children: [
-      Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: color, height: 1)),
-      const SizedBox(height: 2),
-      Text(label, style: const TextStyle(fontSize: 9, fontWeight: FontWeight.w500, color: AppColors.textSecondary)),
-    ]);
-  }
-
   // ── Quick actions grid ──────────────────────────────────────────────
 
   Widget _buildQuickActions() {
@@ -787,7 +775,8 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
       if (p.can(Perm.masterCaseTypes) || p.can(Perm.masterEyeExam) || p.can(Perm.masterLocations)) _QA(Icons.tune_rounded, 'Masters', const Color(0xFF0891B2), () => widget.onNavigate('masters')),
       if (p.can(Perm.masterDoctors) || p.can(Perm.masterReceptions) || p.can(Perm.masterOtStaff)) _QA(Icons.manage_accounts_rounded, 'Users', AppColors.secondary, () => widget.onNavigate('users')),
       if (p.can(Perm.settingsHospital)) _QA(Icons.settings_rounded, 'Settings', const Color(0xFF475569), () => widget.onNavigate('settings')),
-      if (p.can(Perm.opdFocCreate) || p.can(Perm.opdFocAccept)) _QA(Icons.money_off_rounded, 'FOC', const Color(0xFFD97706), () => widget.onNavigate('foc')),
+      // FOC disabled at client's request — see foc_screen.dart.
+      // if (p.can(Perm.opdFocCreate) || p.can(Perm.opdFocAccept)) _QA(Icons.money_off_rounded, 'FOC', const Color(0xFFD97706), () => widget.onNavigate('foc')),
     ];
     if (actions.isEmpty) return const SizedBox.shrink();
 
@@ -843,28 +832,9 @@ class _DashboardScreenState extends State<DashboardScreen> with SingleTickerProv
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  String _fmtRupee(double amount) {
-    if (amount >= 10000000) return '₹${(amount / 10000000).toStringAsFixed(1)}Cr';
-    if (amount >= 100000) return '₹${(amount / 100000).toStringAsFixed(1)}L';
-    if (amount >= 1000) return '₹${(amount / 1000).toStringAsFixed(0)}k';
-    return '₹${amount.toInt()}';
-  }
+  String _fmtRupee(double amount) => formatMoneyCompact(amount, widget.hospital.currencySymbol);
 
-  String _fmtRupeeFull(double amount) {
-    final n = amount.toInt();
-    if (n == 0) return '₹0';
-    final s = n.toString();
-    if (s.length <= 3) return '₹$s';
-    final last3 = s.substring(s.length - 3);
-    var rest = s.substring(0, s.length - 3);
-    final chunks = <String>[last3];
-    while (rest.length > 2) {
-      chunks.add(rest.substring(rest.length - 2));
-      rest = rest.substring(0, rest.length - 2);
-    }
-    if (rest.isNotEmpty) chunks.add(rest);
-    return '₹${chunks.reversed.join(',')}';
-  }
+  String _fmtRupeeFull(double amount) => formatMoney(amount, widget.hospital.currencySymbol);
 
   String _fmtWait(int minutes) {
     if (minutes < 1) return 'Just in';

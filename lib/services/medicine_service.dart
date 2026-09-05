@@ -1,5 +1,8 @@
 ﻿import 'dart:convert';
+import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:open_filex/open_filex.dart';
+import 'package:path_provider/path_provider.dart';
 import '../config/app_config.dart';
 import '../models/medicine_models.dart';
 import 'base_service.dart';
@@ -113,6 +116,43 @@ class MedicineService with AuthenticatedService {
   Future<void> createMedicine(Map<String, dynamic> data) => _post('medicines', data);
   Future<void> updateMedicine(int id, Map<String, dynamic> data) => _put('medicines/$id', data);
   Future<void> deleteMedicine(int id) => _delete('medicines/$id');
+
+  /// Bulk-import medicines from a CSV/XLS/XLSX file. See
+  /// CSV_MEDICINE_IMPORT_PARITY_PLAN.md — mirrors web's HospitalMedicineImport.
+  Future<MedicineImportResult> importMedicines(File file) async {
+    final request = http.MultipartRequest('POST', Uri.parse('$_base/medicines/import'));
+    request.headers.addAll(await headers);
+    request.files.add(await http.MultipartFile.fromPath('file', file.path));
+
+    final streamed = await request.send().timeout(const Duration(seconds: 60));
+    final res = await http.Response.fromStream(streamed);
+    return MedicineImportResult.fromJson(_parse(res));
+  }
+
+  /// Downloads the sample import file and opens it with the system viewer —
+  /// same download+open pattern already used in ot_report_service.dart.
+  Future<void> downloadSampleFile() async {
+    final uri = Uri.parse('$_base/medicines/import/sample');
+    final req = http.Request('GET', uri);
+    (await headers).forEach((k, v) => req.headers[k] = v);
+    final client = http.Client();
+    try {
+      final streamedRes = await client.send(req).timeout(const Duration(seconds: 30));
+      if (streamedRes.statusCode != 200) {
+        throw Exception('Download failed (${streamedRes.statusCode})');
+      }
+      final bytes = await streamedRes.stream.toBytes();
+      final ts = DateTime.now().millisecondsSinceEpoch;
+      final dir = Platform.isAndroid
+          ? ((await getExternalStorageDirectory()) ?? await getApplicationDocumentsDirectory())
+          : await getApplicationDocumentsDirectory();
+      final file = File('${dir.path}/medicine-sample_$ts.xlsx');
+      await file.writeAsBytes(bytes);
+      await OpenFilex.open(file.path);
+    } finally {
+      client.close();
+    }
+  }
 
   // ── Medicine Groups ───────────────────────────────────────────────────────────
 

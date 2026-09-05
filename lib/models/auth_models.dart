@@ -90,6 +90,12 @@ class HospitalInfo {
   final int? primaryLightColor;
   final int? secondaryColor;
   final int? backgroundColor;
+  final String currencyCode;
+  final String currencySymbol;
+  final String? timezone;
+  final String logoUrl;
+  final String logoNobgUrl;
+  final String logoSidebarStyle;
 
   const HospitalInfo({
     required this.name,
@@ -98,6 +104,12 @@ class HospitalInfo {
     this.primaryLightColor,
     this.secondaryColor,
     this.backgroundColor,
+    this.currencyCode = 'INR',
+    this.currencySymbol = '₹',
+    this.timezone,
+    this.logoUrl = '',
+    this.logoNobgUrl = '',
+    this.logoSidebarStyle = 'white',
   });
 
   factory HospitalInfo.fromJson(Map<String, dynamic> json) => HospitalInfo(
@@ -107,6 +119,12 @@ class HospitalInfo {
         primaryLightColor: json['primary_light_color'] as int?,
         secondaryColor:    json['secondary_color']     as int?,
         backgroundColor:   json['background_color']    as int?,
+        currencyCode:   json['currency_code']   as String? ?? 'INR',
+        currencySymbol: json['currency_symbol'] as String? ?? '₹',
+        timezone:       json['timezone'] as String?,
+        logoUrl:          json['logo_url'] as String? ?? '',
+        logoNobgUrl:      json['logo_nobg_url'] as String? ?? '',
+        logoSidebarStyle: json['logo_sidebar_style'] as String? ?? 'white',
       );
 
   Map<String, dynamic> toJson() => {
@@ -116,6 +134,12 @@ class HospitalInfo {
         if (primaryLightColor != null) 'primary_light_color': primaryLightColor,
         if (secondaryColor != null)    'secondary_color':     secondaryColor,
         if (backgroundColor != null)   'background_color':    backgroundColor,
+        'currency_code': currencyCode,
+        'currency_symbol': currencySymbol,
+        if (timezone != null) 'timezone': timezone,
+        'logo_url': logoUrl,
+        'logo_nobg_url': logoNobgUrl,
+        'logo_sidebar_style': logoSidebarStyle,
       };
 }
 

@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -15,6 +14,8 @@ import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_pagination_bar.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 
 /// Closes a dialog that contains text fields safely. `unfocus()` only
 /// *schedules* the focus change — it doesn't complete synchronously — so
@@ -92,28 +93,13 @@ class _OtWardQueueScreenState extends State<OtWardQueueScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _paneMode != _PaneMode.list
-            ? Column(children: [
-                TextButton.icon(onPressed: _closePane, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 420, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode != _PaneMode.list,
+      onBack: _closePane,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 420,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -128,12 +114,13 @@ class _OtWardQueueScreenState extends State<OtWardQueueScreen> {
             Icon(Icons.bed_rounded, color: AppColors.primary, size: 20),
             const SizedBox(width: 8),
             const Expanded(child: Text('Ward Entry Queue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+            IconButton(onPressed: _loading ? null : _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
           ]),
         ),
         const SizedBox(height: 8),
         Expanded(
           child: _loading
-              ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+              ? const AppSkeletonList(count: 6, itemHeight: 90)
               : _error != null
                   ? AppErrorState(message: _error!, onRetry: _load)
                   : _buildBody(),
@@ -155,7 +142,9 @@ class _OtWardQueueScreenState extends State<OtWardQueueScreen> {
         final selected = _paneMode == _PaneMode.detail && _selected?.id == item.id;
         final canSend = item.otStatus == OtStatus.paymentVerified || item.otStatus == OtStatus.inWard;
         final sending = _sendingId == item.id;
-        return Material(
+        return AnimatedListItem(
+          index: i,
+          child: Material(
           color: selected ? AppColors.primaryA08 : Colors.white,
           borderRadius: BorderRadius.circular(AppRadius.md),
           child: InkWell(
@@ -195,6 +184,7 @@ class _OtWardQueueScreenState extends State<OtWardQueueScreen> {
                 ],
               ]),
             ),
+          ),
           ),
         );
       },
@@ -529,7 +519,7 @@ class _WardDetailPaneState extends State<_WardDetailPane> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 5, itemHeight: 70)
             : _loadError != null
                 ? AppErrorState(message: _loadError!, onRetry: _load)
                 : SingleChildScrollView(

@@ -9,6 +9,9 @@ import '../services/permission_service.dart';
 import '../services/report_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
+import '../widgets/skeleton.dart';
+import '../utils/currency_format.dart';
+import '../utils/refreshable.dart';
 
 /// Tablet OPD Reports module — Pattern D (persistent filter panel + real
 /// DataTable). Mirrors web's redesigned landing page (a "Total Collection"
@@ -28,8 +31,11 @@ class ReportsScreen extends StatefulWidget {
 
 enum _View { landing, channel }
 
-class _ReportsScreenState extends State<ReportsScreen> {
+class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
   _View _view = _View.landing;
+
+  @override
+  Future<void> refreshSilently() => _view == _View.landing ? _loadCounts() : _load(page: _page);
 
   // Landing state
   ReportChannelCounts? _counts;
@@ -268,7 +274,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
           ),
           const SizedBox(height: 16),
           if (_countsLoading && _counts == null)
-            SizedBox(height: 200, child: Center(child: CircularProgressIndicator(color: AppColors.primary)))
+            const SizedBox(height: 200, child: AppSkeletonList(count: 2, itemHeight: 80, padding: EdgeInsets.zero))
           else if (_countsError != null && _counts == null)
             SizedBox(
               height: 200,
@@ -459,7 +465,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
 
   Widget _buildTableBody(ReportChannelResult? result) {
     if (_loading && result == null) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 6, itemHeight: 56);
     }
     if (_error != null && result == null) {
       return Center(
@@ -522,7 +528,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
                     DataCell(Text(p.locationCity ?? '-')),
                     // Case fees shown for every row per web's channel.blade.php
                     // (unconditional money() column) — not gated on walk-in type.
-                    DataCell(Text('₹${p.caseFee.toStringAsFixed(2)}')),
+                    DataCell(Text('${currentCurrencySymbol()}${p.caseFee.toStringAsFixed(2)}')),
                   ]);
                 }).toList(),
               ),
@@ -565,7 +571,7 @@ class _CollectionBanner extends StatelessWidget {
               children: [
                 const Text('Total Collection (Walk-in)', style: TextStyle(color: Colors.white70, fontSize: 12, fontWeight: FontWeight.w600)),
                 const SizedBox(height: 3),
-                Text('₹${total.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
+                Text('${currentCurrencySymbol()}${total.toStringAsFixed(2)}', style: const TextStyle(color: Colors.white, fontSize: 26, fontWeight: FontWeight.w900, letterSpacing: -0.5)),
               ],
             ),
           ),
@@ -684,12 +690,7 @@ class _FilterPanel extends StatelessWidget {
   // fetch fails, filterOptions stays null forever and this panel used to
   // spin indefinitely with no way out. Show the real error + a retry
   // instead of an infinite loader.
-  Widget _buildLoading() => Center(
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2),
-        ),
-      );
+  Widget _buildLoading() => const AppSkeletonList(count: 4, itemHeight: 48, padding: EdgeInsets.zero);
 
   Widget _buildError() => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -781,7 +782,7 @@ class _FilterPanel extends StatelessWidget {
       children: [
         const _FilterLabel('Date Range'),
         const SizedBox(height: 6),
-        GestureDetector(
+        PressScaleWrapper(
           onTap: onPickDateRange,
           child: Container(
             width: double.infinity,

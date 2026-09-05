@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -15,6 +14,9 @@ import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_pagination_bar.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../utils/currency_format.dart';
 
 /// Tablet Assistant Dashboard — Pattern A (list + detail split), matching
 /// `OtWardQueueScreen`/`OtCounsellorDashboardScreen` exactly. Used to be
@@ -79,28 +81,13 @@ class _OtAssistantDashboardScreenState extends State<OtAssistantDashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _paneMode != _PaneMode.list
-            ? Column(children: [
-                TextButton.icon(onPressed: _closePane, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 420, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode != _PaneMode.list,
+      onBack: _closePane,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 420,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -116,12 +103,13 @@ class _OtAssistantDashboardScreenState extends State<OtAssistantDashboardScreen>
             const SizedBox(width: 8),
             const Expanded(child: Text('Surgery Queue', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
             if (_meta != null) Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: AppColors.surfaceFill, borderRadius: BorderRadius.circular(999)), child: Text('${_meta!.total} total', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.darkNavy))),
+            IconButton(onPressed: _loading ? null : _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
           ]),
         ),
         const SizedBox(height: 8),
         Expanded(
           child: _loading
-              ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+              ? const AppSkeletonList(count: 6, itemHeight: 80)
               : _error != null
                   ? AppErrorState(message: _error!, onRetry: _load)
                   : _buildBody(),
@@ -141,7 +129,9 @@ class _OtAssistantDashboardScreenState extends State<OtAssistantDashboardScreen>
       itemBuilder: (_, i) {
         final item = _items[i];
         final selected = _paneMode == _PaneMode.detail && _selected?.id == item.id;
-        return Material(
+        return AnimatedListItem(
+          index: i,
+          child: Material(
           color: selected ? AppColors.primaryA08 : Colors.white,
           borderRadius: BorderRadius.circular(AppRadius.md),
           child: InkWell(
@@ -185,6 +175,7 @@ class _OtAssistantDashboardScreenState extends State<OtAssistantDashboardScreen>
                 ],
               ]),
             ),
+          ),
           ),
         );
       },
@@ -458,7 +449,7 @@ class _AssistantDetailPaneState extends State<_AssistantDetailPane> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 5, itemHeight: 90)
             : _loadError != null
                 ? AppErrorState(message: _loadError!, onRetry: _load)
                 : _buildForm(),
@@ -476,7 +467,7 @@ class _AssistantDetailPaneState extends State<_AssistantDetailPane> {
             Wrap(spacing: 32, runSpacing: 6, children: [
               _readOnlyRow('Patient Name', formData.booking.patient?.fullName ?? '—'),
               _readOnlyRow('Phone', formData.booking.patient?.contactNo ?? '—'),
-              _readOnlyRow('Package', '₹${(formData.counselling?.packageAmount ?? formData.booking.packageAmount ?? 0).toStringAsFixed(2)}'),
+              _readOnlyRow('Package', '${currentCurrencySymbol()}${(formData.counselling?.packageAmount ?? formData.booking.packageAmount ?? 0).toStringAsFixed(2)}'),
               _readOnlyRow('Mediclaim', (formData.counselling?.mediclaim ?? formData.booking.hasMediclaim ?? false) ? 'YES' : 'NO'),
             ]),
             const SizedBox(height: 10),
@@ -556,7 +547,7 @@ class _AssistantDetailPaneState extends State<_AssistantDetailPane> {
               const SizedBox(width: 10),
               Expanded(child: TextFormField(controller: _estimatedPowerCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), decoration: _deco('Estimated Power'))),
               const SizedBox(width: 10),
-              Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: _deco('Lens Cost (₹)', hint: 'Enter lens cost'))),
+              Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), decoration: _deco('Lens Cost (${currentCurrencySymbol()})', hint: 'Enter lens cost'))),
             ]),
             const SizedBox(height: 16),
 

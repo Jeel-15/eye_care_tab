@@ -10,6 +10,7 @@ import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import 'patient_history_route.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Share History module — top TabBar (3 tabs, matches Medicines'
 /// flat-area convention) replacing mobile's same-named tabs but with two
@@ -169,7 +170,7 @@ class _PatientHistoryTabState extends State<_PatientHistoryTab> with AutomaticKe
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
             clipBehavior: Clip.antiAlias,
             child: _loading
-                ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+                ? const AppSkeletonList(count: 6, itemHeight: 70)
                 : _error != null
                     ? AppErrorState(message: _error!, onRetry: () => _search(page: _page))
                     : _searched && _patients.isEmpty
@@ -372,7 +373,7 @@ class _HospitalHistoryTabState extends State<_HospitalHistoryTab> with Automatic
             decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
             clipBehavior: Clip.antiAlias,
             child: _loading
-                ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+                ? const AppSkeletonList(count: 6, itemHeight: 70)
                 : _error != null
                     ? AppErrorState(message: _error!, onRetry: () => _load(page: _page))
                     : _hospitals.isEmpty
@@ -526,7 +527,7 @@ class _RequestsTabState extends State<_RequestsTab> with AutomaticKeepAliveClien
   @override
   Widget build(BuildContext context) {
     super.build(context);
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 90);
     if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
     final data = _data!;
     return RefreshIndicator(
@@ -661,7 +662,7 @@ class _PartnerPatientsViewState extends State<_PartnerPatientsView> {
                 decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
                 clipBehavior: Clip.antiAlias,
                 child: _loading
-                    ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+                    ? const AppSkeletonList(count: 6, itemHeight: 70)
                     : _error != null
                         ? AppErrorState(message: _error!, onRetry: () => _load(page: _page))
                         : _patients.isEmpty
@@ -1063,7 +1064,7 @@ class _HospitalDetailDialogState extends State<_HospitalDetailDialog> {
               IconButton(icon: Icon(Icons.close_rounded, color: AppColors.textSecondary), onPressed: () => Navigator.pop(context)),
             ]),
             if (_loading)
-              Padding(padding: const EdgeInsets.symmetric(vertical: 40), child: Center(child: CircularProgressIndicator(color: AppColors.primary)))
+              const AppSkeletonList(count: 3, itemHeight: 50, padding: EdgeInsets.symmetric(vertical: 12))
             else if (_error != null)
               Padding(padding: const EdgeInsets.symmetric(vertical: 20), child: Text(_error!, style: TextStyle(color: AppColors.red)))
             else if (_detail != null) ...[

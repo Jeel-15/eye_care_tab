@@ -1,10 +1,11 @@
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../models/ot_report_models.dart';
 import '../services/ot_report_service.dart';
 import '../widgets/app_error_state.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../widgets/skeleton.dart';
 import 'ot_report_viewer_screen.dart';
 
 class _ReportMeta {
@@ -87,33 +88,20 @@ class _OtReportsScreenState extends State<OtReportsScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading && _groups.isEmpty) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 6, itemHeight: 80);
     }
     if (_error != null && _groups.isEmpty) {
       return AppErrorState(message: _error!, onRetry: _load);
     }
 
-    return LayoutBuilder(builder: (context, c) {
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-      if (c.maxWidth < AppBreakpoints.medium) {
-        return _selected == null
-            ? listPane
-            : Column(children: [
-                TextButton.icon(
-                  onPressed: () => setState(() => _selected = null),
-                  icon: const Icon(Icons.arrow_back_rounded, size: 18),
-                  label: const Text('Back to OT Reports'),
-                ),
-                Expanded(child: detailPane),
-              ]);
-      }
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        SizedBox(width: 320, child: listPane),
-        const SizedBox(width: 20),
-        Expanded(child: detailPane),
-      ]);
-    });
+    return SplitPaneScaffold(
+      showDetail: _selected != null,
+      onBack: () => setState(() => _selected = null),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      backLabel: 'Back to OT Reports',
+      listPaneWidth: 320,
+    );
   }
 
   Widget _buildListPane() {
@@ -126,6 +114,7 @@ class _OtReportsScreenState extends State<OtReportsScreen> {
           padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
           child: Row(children: [
             Expanded(child: Text('OT Reports', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.primary))),
+            IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _loading ? null : _load),
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
               decoration: BoxDecoration(color: AppColors.teal, borderRadius: BorderRadius.circular(AppRadius.full), boxShadow: [BoxShadow(color: AppColors.teal.withValues(alpha: 0.35), blurRadius: 8, offset: const Offset(0, 2))]),

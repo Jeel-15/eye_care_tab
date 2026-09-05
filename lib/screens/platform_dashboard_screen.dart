@@ -12,6 +12,7 @@ import '../services/platform_dashboard_service.dart';
 import '../utils/app_decorations.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/skeleton.dart';
 import '../widgets/status_badge.dart';
 
 /// Tablet Platform Dashboard — Pattern B, two-column on wide layouts (stat
@@ -22,6 +23,10 @@ import '../widgets/status_badge.dart';
 ///
 /// "Recently Registered" rows are not yet tappable — PlatformHospitalDetailScreen
 /// lands in the next batch of this phase; wire the tap-through then.
+// Hardcoded ₹ here is intentional, not a currency-parity gap — mirrors
+// web's own deliberate INR-only SaaS/plan billing design (see
+// LOCATION_CURRENCY_PARITY_PRD.md Phase 5). Only hospital-facing screens
+// (patient billing, OT, dashboards) use the per-tenant currency.
 class PlatformDashboardScreen extends StatefulWidget {
   final PlatformAdmin admin;
 
@@ -58,7 +63,7 @@ class _PlatformDashboardScreenState extends State<PlatformDashboardScreen> {
 
   @override
   Widget build(BuildContext context) {
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 4, itemHeight: 100);
     if (_error != null) return _buildError();
     return RefreshIndicator(
       color: AppColors.primary,

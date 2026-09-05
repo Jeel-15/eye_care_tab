@@ -164,6 +164,7 @@ class Patient {
   final DateTime? primaryDoneAt;
   final DateTime? secondaryDoneAt;
   final DateTime? createdAt;
+  final DateTime? updatedAt;
   final PatientDoctor? doctor;
   final PatientLocation? location;
   final PatientCaseType? caseType;
@@ -196,6 +197,7 @@ class Patient {
     this.primaryDoneAt,
     this.secondaryDoneAt,
     this.createdAt,
+    this.updatedAt,
     this.doctor,
     this.location,
     this.caseType,
@@ -239,6 +241,9 @@ class Patient {
             : null,
         createdAt: j['created_at'] != null
             ? DateTime.tryParse(j['created_at'] as String)
+            : null,
+        updatedAt: j['updated_at'] != null
+            ? DateTime.tryParse(j['updated_at'] as String)
             : null,
         doctor: j['doctor'] != null
             ? PatientDoctor.fromJson(j['doctor'] as Map<String, dynamic>)

@@ -1,4 +1,8 @@
-﻿import 'dart:convert';
+// FOC (Free of Charge) feature disabled at the client's request — kept
+// commented out (not deleted) in case it's needed again in future, mirroring
+// how the web developer handled the same request on the web app.
+/*
+import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../models/foc_models.dart';
@@ -84,3 +88,4 @@ class FocService with AuthenticatedService {
     }
   }
 }
+*/

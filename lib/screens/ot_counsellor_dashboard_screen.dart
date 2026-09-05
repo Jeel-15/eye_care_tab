@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:signature/signature.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../utils/date_format.dart';
@@ -13,7 +12,10 @@ import '../services/ot_counsellor_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_section_header.dart';
+import '../widgets/split_pane_scaffold.dart';
+import '../widgets/skeleton.dart';
 import '../widgets/ot/signature_pad_field.dart';
+import '../utils/currency_format.dart';
 
 /// Tablet OT Counsellor Dashboard (Round 3 Phase 1) — Pattern A (list +
 /// detail split), matching `PatientsScreen`/`OtAppointmentListScreen` — the
@@ -98,28 +100,13 @@ class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScree
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _paneMode != _PaneMode.list
-            ? Column(children: [
-                TextButton.icon(onPressed: _closePane, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 420, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode != _PaneMode.list,
+      onBack: _closePane,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 420,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -134,11 +121,12 @@ class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScree
             Icon(Icons.support_agent_rounded, color: AppColors.primary, size: 20),
             const SizedBox(width: 8),
             const Expanded(child: Text('OT Counsellor', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+            IconButton(onPressed: _loading ? null : _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
           ]),
         ),
         Expanded(
           child: _loading
-              ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+              ? const AppSkeletonList(count: 6, itemHeight: 80)
               : _error != null
                   ? AppErrorState(message: _error!, onRetry: _load)
                   : _buildBody(),
@@ -192,7 +180,7 @@ class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScree
         ],
         if (!tappable && item.packageAmount != null) ...[
           const SizedBox(height: 4),
-          Text('₹${item.packageAmount!.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w700)),
+          Text('${currentCurrencySymbol()}${item.packageAmount!.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w700)),
         ],
       ]),
     );
@@ -428,7 +416,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
       );
       final totalEstimate = await OtCounsellorService.instance.storeCounselling(widget.bookingId, counselling);
       if (!mounted) return;
-      showAppSnackBar(context, 'Counselling saved — estimate ₹${totalEstimate.toStringAsFixed(0)}', isSuccess: true);
+      showAppSnackBar(context, 'Counselling saved — estimate ${currentCurrencySymbol()}${totalEstimate.toStringAsFixed(0)}', isSuccess: true);
       widget.onSaved();
     } catch (e) {
       if (mounted) {
@@ -470,7 +458,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 5, itemHeight: 70, padding: EdgeInsets.zero)
             : _loadError != null
                 ? AppErrorState(message: _loadError!, onRetry: _load)
                 : _buildForm(),
@@ -527,7 +515,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
               // Lens Cost is now a plain manual field, decoupled from the
               // package (web pull 2026-08-07) — typed in and added into
               // Total Estimate, not autofilled by package selection anymore.
-              Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Lens Cost', suffix: '₹'))),
+              Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Lens Cost', suffix: currentCurrencySymbol()))),
             ]),
             const SizedBox(height: 20),
 
@@ -548,13 +536,13 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
             TextFormField(controller: _packageNameCtrl, decoration: _deco('Package Name')),
             const SizedBox(height: 12),
             Row(children: [
-              Expanded(child: TextFormField(controller: _otChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('OT Charges', suffix: '₹'))),
+              Expanded(child: TextFormField(controller: _otChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('OT Charges', suffix: currentCurrencySymbol()))),
               const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _surgeonChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Surgeon Charges', suffix: '₹'))),
+              Expanded(child: TextFormField(controller: _surgeonChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Surgeon Charges', suffix: currentCurrencySymbol()))),
               const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _nursingChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Nursing Charges', suffix: '₹'))),
+              Expanded(child: TextFormField(controller: _nursingChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Nursing Charges', suffix: currentCurrencySymbol()))),
               const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _consumablesChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Consumables', suffix: '₹'))),
+              Expanded(child: TextFormField(controller: _consumablesChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Consumables', suffix: currentCurrencySymbol()))),
             ]),
             const SizedBox(height: 12),
             // Matches web exactly: Total Estimate = ot_charges + surgeon_charges
@@ -566,7 +554,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
               decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA22)),
               child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
                 const Text('Total Estimate', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                Text('₹${_totalEstimate.toStringAsFixed(2)}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.primary)),
+                Text('${currentCurrencySymbol()}${_totalEstimate.toStringAsFixed(2)}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.primary)),
               ]),
             ),
             const SizedBox(height: 20),
@@ -729,7 +717,7 @@ class _ConsentFormPaneState extends State<_ConsentFormPane> {
       const SizedBox(height: 16),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+            ? const AppSkeletonList(count: 5, itemHeight: 70, padding: EdgeInsets.zero)
             : _loadError != null
                 ? AppErrorState(message: _loadError!, onRetry: _load)
                 : _buildForm(),

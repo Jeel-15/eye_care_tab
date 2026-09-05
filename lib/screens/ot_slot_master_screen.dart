@@ -3,6 +3,7 @@ import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/ot_slot_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet OT Slots master — name + start/end time. Ported from
 /// eye_care_app/lib/screens/ot_slot_master_screen.dart.
@@ -80,7 +81,7 @@ class _OtSlotMasterScreenState extends State<OtSlotMasterScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text(item == null ? 'Add OT Slot' : 'Edit OT Slot'),
         content: SizedBox(width: 360, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextFormField(controller: nameCtrl, autofocus: true, decoration: InputDecoration(labelText: 'Slot Name', errorText: nameErr, border: const OutlineInputBorder())),
+          TextFormField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Slot Name', errorText: nameErr, border: const OutlineInputBorder())),
           const SizedBox(height: 12),
           Row(children: [
             Expanded(child: TextFormField(controller: startCtrl, decoration: const InputDecoration(labelText: 'Start (e.g. 09:00)', border: OutlineInputBorder()))),
@@ -106,6 +107,8 @@ class _OtSlotMasterScreenState extends State<OtSlotMasterScreen> {
         Icon(Icons.schedule_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('OT Slots', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -116,7 +119,7 @@ class _OtSlotMasterScreenState extends State<OtSlotMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 68);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No OT slots yet.', style: const TextStyle(color: AppColors.textDisabled)));

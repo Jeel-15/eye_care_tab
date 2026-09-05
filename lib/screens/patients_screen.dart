@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
@@ -10,9 +9,11 @@ import '../services/exam_masters_service.dart';
 import '../services/patient_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_route.dart';
+import '../utils/refreshable.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/exam/dilation_lock.dart';
 import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 import 'opd_bill_screen.dart';
 import 'patient_checkin_screen.dart';
 import 'patient_form_screen.dart';
@@ -41,7 +42,7 @@ class PatientsScreen extends StatefulWidget {
 
 enum _PaneMode { view, addWalkIn, addPhone, edit, history }
 
-class _PatientsScreenState extends State<PatientsScreen> {
+class _PatientsScreenState extends State<PatientsScreen> implements Refreshable {
   bool _showAll = false;
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
@@ -73,6 +74,9 @@ class _PatientsScreenState extends State<PatientsScreen> {
     _debounce?.cancel();
     super.dispose();
   }
+
+  @override
+  Future<void> refreshSilently() => _goToPage(_currentPage);
 
   Future<void> _goToPage(int page) async {
     if (_isLoading) return;
@@ -230,28 +234,13 @@ class _PatientsScreenState extends State<PatientsScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _selectedId != null || _paneMode != _PaneMode.view
-            ? Column(children: [
-                TextButton.icon(onPressed: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 400, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _selectedId != null || _paneMode != _PaneMode.view,
+      onBack: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }),
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 400,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -269,6 +258,7 @@ class _PatientsScreenState extends State<PatientsScreen> {
             child: Row(children: [
               Text('Patients', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.primary)),
               const Spacer(),
+              IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _isLoading ? null : () => _goToPage(_currentPage)),
               if (p.can(Perm.opdPatientRegister))
                 IconButton(icon: Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary, size: 20), tooltip: 'New Walk-in', onPressed: () => _openAdd(_PaneMode.addWalkIn)),
               if (p.can(Perm.opdPatientRegisterPhone))
@@ -304,7 +294,7 @@ class _PatientsScreenState extends State<PatientsScreen> {
   }
 
   Widget _segBtn(String label, bool active, VoidCallback onTap) {
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: onTap,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 180),
@@ -446,7 +436,7 @@ class _PatientsScreenState extends State<PatientsScreen> {
         ),
       );
     }
-    return _panelBox(child: _PatientDetailView(patient: selected, onEdit: () => _openEdit(selected), onDelete: () => _deletePatient(selected), onHistory: () => _openHistory(selected), onCheckin: () => _openCheckin(selected), onPrimaryExam: () => _openPrimaryExam(selected), onSecondaryExam: () => _openSecondaryExam(selected), onPrintBill: () => _openPrintBill(selected), onNotReady: _notReady));
+    return _panelBox(child: _PatientDetailView(patient: selected, currencySymbol: widget.hospital.currencySymbol, onEdit: () => _openEdit(selected), onDelete: () => _deletePatient(selected), onHistory: () => _openHistory(selected), onCheckin: () => _openCheckin(selected), onPrimaryExam: () => _openPrimaryExam(selected), onSecondaryExam: () => _openSecondaryExam(selected), onPrintBill: () => _openPrintBill(selected), onNotReady: _notReady));
   }
 
   Widget _panelBox({required Widget child}) {
@@ -513,6 +503,7 @@ class _PatientListTile extends StatelessWidget {
 
 class _PatientDetailView extends StatelessWidget {
   final Patient patient;
+  final String currencySymbol;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
   final VoidCallback onHistory;
@@ -522,7 +513,7 @@ class _PatientDetailView extends StatelessWidget {
   final VoidCallback onPrintBill;
   final void Function(String label) onNotReady;
 
-  const _PatientDetailView({required this.patient, required this.onEdit, required this.onDelete, required this.onHistory, required this.onCheckin, required this.onPrimaryExam, required this.onSecondaryExam, required this.onPrintBill, required this.onNotReady});
+  const _PatientDetailView({required this.patient, required this.currencySymbol, required this.onEdit, required this.onDelete, required this.onHistory, required this.onCheckin, required this.onPrimaryExam, required this.onSecondaryExam, required this.onPrintBill, required this.onNotReady});
 
   @override
   Widget build(BuildContext context) {
@@ -600,7 +591,7 @@ class _PatientDetailView extends StatelessWidget {
         _apptDiv(),
         _apptItem(Icons.category_outlined, 'Case', p.caseType?.caseType ?? '—'),
         _apptDiv(),
-        _apptItem(Icons.currency_rupee_rounded, 'Fee', p.caseFee != null ? '₹${p.caseFee!.toInt()}' : '—'),
+        _apptItem(Icons.currency_rupee_rounded, 'Fee', p.caseFee != null ? '$currencySymbol${p.caseFee!.toInt()}' : '—'),
       ]),
     );
   }

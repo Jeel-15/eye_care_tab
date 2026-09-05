@@ -1,9 +1,9 @@
 ﻿import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
 import '../services/permission_service.dart';
+import '../widgets/split_pane_scaffold.dart';
 import 'case_type_master_screen.dart';
 import 'generic_master_screen.dart';
 import 'location_master_screen.dart';
@@ -159,23 +159,14 @@ class _MastersScreenState extends State<MastersScreen> {
       );
     }
 
-    return LayoutBuilder(builder: (context, c) {
-      final listPane = _buildListPane(sections);
-      final detailPane = _buildDetailPane();
-      if (c.maxWidth < AppBreakpoints.medium) {
-        return _selected == null
-            ? listPane
-            : Column(children: [
-                TextButton.icon(onPressed: () => setState(() => _selected = null), icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to Masters')),
-                Expanded(child: detailPane),
-              ]);
-      }
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        SizedBox(width: 320, child: listPane),
-        const SizedBox(width: 20),
-        Expanded(child: detailPane),
-      ]);
-    });
+    return SplitPaneScaffold(
+      showDetail: _selected != null,
+      onBack: () => setState(() => _selected = null),
+      listPane: _buildListPane(sections),
+      detailPane: _buildDetailPane(),
+      backLabel: 'Back to Masters',
+      listPaneWidth: 320,
+    );
   }
 
   Widget _buildListPane(List<_MasterSection> sections) {

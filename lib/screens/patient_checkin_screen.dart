@@ -9,6 +9,7 @@ import '../services/masters_service.dart';
 import '../services/patient_service.dart';
 import '../utils/phone_rules.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Patient Check-in — shown as a dialog (not a full-screen route) from
 /// the Patients detail pane, since it's a short discrete action. Business
@@ -197,7 +198,7 @@ class _PatientCheckinScreenState extends State<PatientCheckinScreen> {
             _buildHeader(),
             Flexible(
               child: _mastersLoading
-                  ? Padding(padding: const EdgeInsets.all(48), child: Center(child: CircularProgressIndicator(color: AppColors.primary)))
+                  ? const AppSkeletonList(count: 5, itemHeight: 60)
                   : _mastersError != null
                       ? _buildError()
                       : Padding(padding: const EdgeInsets.fromLTRB(24, 16, 24, 24), child: SingleChildScrollView(child: _buildForm())),
@@ -251,7 +252,7 @@ class _PatientCheckinScreenState extends State<PatientCheckinScreen> {
           _row2(_field('Contact No *', _textField(_contactCtrl, 'Contact number', inputType: TextInputType.phone, maxLength: 16, validator: PhoneRules.required)), _field('WhatsApp No', _textField(_whatsappCtrl, 'Same if blank', inputType: TextInputType.phone, maxLength: 10))),
           _row2(_field('First Name *', _textField(_firstCtrl, 'First Name', required: true)), _field('Surname *', _textField(_lastCtrl, 'Surname', required: true))),
           _row2(_field('Middle Name', _textField(_middleCtrl, 'Middle Name')), _field('Doctor *', _doctorDropdown())),
-          _row2(_field('Case Type *', _caseTypeDropdown()), _field('Case Fee (₹) *', _caseFeeField())),
+          _row2(_field('Case Type *', _caseTypeDropdown()), _field('Case Fee (${widget.hospital.currencySymbol}) *', _caseFeeField())),
           _field('City *', _locationDropdown(), fullWidth: true),
           _row2(_field('District', _readonlyField(_districtCtrl, 'District', Icons.location_city_outlined)), _field('State', _readonlyField(_stateCtrl, 'State', Icons.map_outlined))),
           _row2(_field('Age *', _textField(_ageCtrl, 'Age', inputType: TextInputType.number, required: true, maxLength: 3)), _field('Gender *', _genderDropdown())),

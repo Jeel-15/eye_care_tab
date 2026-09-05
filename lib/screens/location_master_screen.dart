@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/location_service.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Locations master — read-only (managed by platform), search only.
 /// Ported from eye_care_app/lib/screens/location_master_screen.dart.
@@ -48,6 +49,7 @@ class _LocationMasterScreenState extends State<LocationMasterScreen> {
         Icon(Icons.location_on_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('Locations', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
         Tooltip(message: 'Read-only — managed by platform', child: Icon(Icons.lock_outline_rounded, color: AppColors.textDisabled, size: 18)),
       ]),
       const SizedBox(height: 14),
@@ -60,7 +62,7 @@ class _LocationMasterScreenState extends State<LocationMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 70);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results for "$_query"' : 'No locations found.', style: const TextStyle(color: AppColors.textDisabled)));

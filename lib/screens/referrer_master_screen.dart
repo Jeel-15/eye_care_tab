@@ -4,6 +4,7 @@ import '../constants/app_radius.dart';
 import '../services/masters_service.dart';
 import '../services/referrer_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Referrers master — name + contact. Ported from
 /// eye_care_app/lib/screens/referrer_master_screen.dart.
@@ -81,7 +82,7 @@ class _ReferrerMasterScreenState extends State<ReferrerMasterScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text(item == null ? 'Add Referrer' : 'Edit Referrer'),
         content: SizedBox(width: 360, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextFormField(controller: nameCtrl, autofocus: true, decoration: InputDecoration(labelText: 'Name', errorText: nameErr, border: const OutlineInputBorder())),
+          TextFormField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Name', errorText: nameErr, border: const OutlineInputBorder())),
           const SizedBox(height: 12),
           TextFormField(controller: contactCtrl, keyboardType: TextInputType.phone, decoration: const InputDecoration(labelText: 'Contact (optional)', border: OutlineInputBorder())),
         ])),
@@ -102,6 +103,8 @@ class _ReferrerMasterScreenState extends State<ReferrerMasterScreen> {
         Icon(Icons.people_alt_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('Referrers', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -112,7 +115,7 @@ class _ReferrerMasterScreenState extends State<ReferrerMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 60, padding: EdgeInsets.zero);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No referrers yet.', style: const TextStyle(color: AppColors.textDisabled)));
@@ -121,16 +124,19 @@ class _ReferrerMasterScreenState extends State<ReferrerMasterScreen> {
       separatorBuilder: (_, _) => const SizedBox(height: 8),
       itemBuilder: (_, i) {
         final item = items[i];
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
-          child: Row(children: [
-            Expanded(child: Text(item.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
-            if (item.contact != null && item.contact!.isNotEmpty) Text(item.contact!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-            const SizedBox(width: 12),
-            IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
-            IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),
-          ]),
+        return AnimatedListItem(
+          index: i,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
+            child: Row(children: [
+              Expanded(child: Text(item.name, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
+              if (item.contact != null && item.contact!.isNotEmpty) Text(item.contact!, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+              const SizedBox(width: 12),
+              IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
+              IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),
+            ]),
+          ),
         );
       },
     );

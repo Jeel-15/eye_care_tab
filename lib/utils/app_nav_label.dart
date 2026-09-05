@@ -3,7 +3,8 @@ abstract final class NavLabel {
   static const String dashboard    = 'Dashboard';
   static const String patients     = 'Patients';
   static const String shareHistory = 'Share History';
-  static const String focRequests  = 'FOC Requests';
+  // FOC Requests disabled at client's request — see foc_screen.dart.
+  // static const String focRequests  = 'FOC Requests';
 
   // ── Clinical ──────────────────────────────────────────────────────────────
   static const String queueDashboard = 'Queue Dashboard';

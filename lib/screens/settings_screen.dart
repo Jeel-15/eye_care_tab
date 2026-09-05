@@ -12,6 +12,7 @@ import '../services/permission_service.dart';
 import '../services/settings_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_error_state.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet Hospital Settings — single scrollable form (Pattern C, 2-column
 /// field pairs within each section card) replacing mobile's AppBar+footer
@@ -55,6 +56,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final Map<String, TextEditingController> _waitCtrl;
 
   String? _logoUrl;
+  String? _logoNobgUrl;
+  String _logoSidebarStyle = 'white';
   bool _uploadingLogo = false;
 
   bool _letterPadAvailable = false;
@@ -136,6 +139,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     _phoneCtrl.text = s.hospitalPhone;
     _addressCtrl.text = s.hospitalAddress;
     _logoUrl = s.hospitalLogoUrl.isNotEmpty ? s.hospitalLogoUrl : null;
+    _logoNobgUrl = s.hospitalLogoNobgUrl.isNotEmpty ? s.hospitalLogoNobgUrl : null;
+    _logoSidebarStyle = s.logoSidebarStyle;
     _selCountry = s.hospitalCountry;
     _selCountryId = s.hospitalCountryId;
     _selState = s.hospitalState;
@@ -202,6 +207,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         paginationLimit: int.tryParse(_paginationLimit) ?? 25,
         defaultDilationTime: int.tryParse(_dilationCtrl.text.trim()) ?? 40,
         waitThresholds: thresholds,
+        logoSidebarStyle: _logoSidebarStyle,
       );
       if (!mounted) return;
       setState(() { _isDirty = false; _saving = false; });
@@ -221,7 +227,10 @@ class _SettingsScreenState extends State<SettingsScreen> {
     try {
       final url = await SettingsService.instance.uploadLogo(File(picked.path));
       if (!mounted) return;
-      setState(() { _logoUrl = url; _uploadingLogo = false; });
+      // Backend clears the old background-removed variant on every app-side
+      // upload (the app can't regenerate a matching one) — reflect that here
+      // immediately so the sidebar-style preview doesn't show a stale image.
+      setState(() { _logoUrl = url; _logoNobgUrl = null; _uploadingLogo = false; });
       showAppSnackBar(context, 'Logo updated successfully.', isSuccess: true);
     } catch (e) {
       if (!mounted) return;
@@ -343,7 +352,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
         ]),
       );
     }
-    if (_loading) return Center(child: CircularProgressIndicator(color: AppColors.primary));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 100);
     if (_error != null) return _buildError();
     return Form(key: _formKey, child: _buildBody());
   }
@@ -359,6 +368,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _buildHeaderRow(),
+          const SizedBox(height: 16),
+          _buildLogoSection(),
           const SizedBox(height: 20),
           _buildGeneralSection(),
           const SizedBox(height: 16),
@@ -394,13 +405,6 @@ class _SettingsScreenState extends State<SettingsScreen> {
             Text(_settings?.hospitalName.isNotEmpty == true ? _settings!.hospitalName : widget.hospital.name, style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
           ]),
         ),
-        OutlinedButton.icon(
-          onPressed: _uploadingLogo ? null : _pickAndUploadLogo,
-          icon: _uploadingLogo ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)) : const Icon(Icons.upload_rounded, size: 16),
-          label: Text(_uploadingLogo ? 'Uploading...' : 'Change Logo'),
-          style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA30), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
-        ),
-        const SizedBox(width: 12),
         ElevatedButton(
           onPressed: (_isDirty && !_saving) ? _save : null,
           style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, disabledBackgroundColor: AppColors.primaryA22, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14)),
@@ -422,6 +426,104 @@ class _SettingsScreenState extends State<SettingsScreen> {
       const SizedBox(width: 8),
       Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppColors.primaryA50, letterSpacing: 1.2)),
     ]);
+  }
+
+  Widget _buildLogoSection() {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      _sectionHeader('HOSPITAL LOGO', Icons.image_rounded),
+      const SizedBox(height: 10),
+      _card([
+        if (_logoUrl != null) ...[
+          // Two clickable previews — tap to pick which one shows in the nav
+          // rail (mirrors web's Settings page exactly). "Original" always
+          // shows the plain logo; "Sidebar View" shows the background-removed
+          // white silhouette once one exists, matching what the rail will
+          // actually render for each choice.
+          Row(children: [
+            Expanded(
+              child: _buildLogoPreviewBox(
+                label: 'Original',
+                hint: 'Shows original logo colors',
+                dark: false,
+                selected: _logoSidebarStyle == 'original_blur',
+                onTap: () { _markDirty(); setState(() => _logoSidebarStyle = 'original_blur'); },
+                child: _networkOrPlaceholder(_logoUrl!),
+              ),
+            ),
+            const SizedBox(width: 10),
+            Expanded(
+              child: _buildLogoPreviewBox(
+                label: 'Sidebar View',
+                hint: 'Best with transparent PNG',
+                dark: true,
+                selected: _logoSidebarStyle == 'white',
+                onTap: () { _markDirty(); setState(() => _logoSidebarStyle = 'white'); },
+                child: _logoNobgUrl != null
+                    ? ColorFiltered(colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcATop), child: _networkOrPlaceholder(_logoNobgUrl!))
+                    : _networkOrPlaceholder(_logoUrl!),
+              ),
+            ),
+          ]),
+          if (_logoSidebarStyle == 'white' && _logoNobgUrl == null) ...[
+            const SizedBox(height: 8),
+            Text(
+              'Upload via the website to enable a background-removed sidebar logo — showing the original logo until then.',
+              style: TextStyle(fontSize: 11, color: AppColors.primaryA45, height: 1.3),
+            ),
+          ],
+          const SizedBox(height: 14),
+        ] else ...[
+          Center(child: _headerIconCircle()),
+          const SizedBox(height: 14),
+        ],
+        SizedBox(
+          width: double.infinity,
+          child: OutlinedButton.icon(
+            onPressed: _uploadingLogo ? null : _pickAndUploadLogo,
+            icon: _uploadingLogo ? SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2, color: AppColors.primary)) : const Icon(Icons.upload_rounded, size: 16),
+            label: Text(_uploadingLogo ? 'Uploading...' : 'Change Logo'),
+            style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA30), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))),
+          ),
+        ),
+        const SizedBox(height: 6),
+        Center(child: Text('JPG, PNG, WebP — max 2 MB', style: TextStyle(fontSize: 11, color: AppColors.primaryA38))),
+      ]),
+    ]);
+  }
+
+  Widget _networkOrPlaceholder(String url) => Image.network(
+        url,
+        fit: BoxFit.contain,
+        errorBuilder: (_, _, _) => Icon(Icons.image_outlined, color: AppColors.primaryA28),
+      );
+
+  Widget _buildLogoPreviewBox({
+    required String label,
+    required String hint,
+    required bool dark,
+    required bool selected,
+    required VoidCallback onTap,
+    required Widget child,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(12),
+      child: Container(
+        padding: const EdgeInsets.all(10),
+        decoration: BoxDecoration(
+          color: dark ? AppColors.primary : Colors.white,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: selected ? AppColors.primary : AppColors.primaryA10, width: selected ? 2 : 1),
+        ),
+        child: Column(children: [
+          SizedBox(height: 56, child: Padding(padding: const EdgeInsets.all(4), child: child)),
+          const SizedBox(height: 8),
+          Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: selected ? (dark ? Colors.white : AppColors.primary) : (dark ? Colors.white70 : AppColors.primaryA50))),
+          const SizedBox(height: 2),
+          Text(hint, textAlign: TextAlign.center, style: TextStyle(fontSize: 9.5, color: dark ? Colors.white60 : AppColors.primaryA38)),
+        ]),
+      ),
+    );
   }
 
   Widget _card(List<Widget> children) {

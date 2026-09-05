@@ -21,3 +21,14 @@ PageRoute<T> appRoute<T extends Object?>(Widget page) {
     },
   );
 }
+
+/// [Navigator.pushReplacement] using the same transition as [appRoute] —
+/// exists so login/splash-style replace-navigation doesn't need to hand-roll
+/// its own fade transition (which drifts from this one whenever it's tuned).
+Future<T?> pushAppRouteReplacement<T extends Object?, TO extends Object?>(
+  BuildContext context,
+  Widget page, {
+  TO? result,
+}) {
+  return Navigator.of(context).pushReplacement<T, TO>(appRoute<T>(page), result: result);
+}

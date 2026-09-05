@@ -5,6 +5,8 @@ import '../constants/app_radius.dart';
 import '../services/ot_inventory_service.dart';
 import '../models/ot_inventory_models.dart';
 import '../widgets/app_animations.dart';
+import '../utils/currency_format.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet OT Packages master (Round 3 Phase 7) — feeds Phase 1's
 /// counselling package-lookup. Ported from
@@ -102,15 +104,15 @@ class _OtPackageMasterScreenState extends State<OtPackageMasterScreen> {
               ]),
               const SizedBox(height: 12),
               Row(children: [
-                Expanded(child: TextFormField(controller: otCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: const InputDecoration(labelText: 'OT Charges', prefixText: '₹', border: OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: otCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'OT Charges', prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
                 const SizedBox(width: 10),
-                Expanded(child: TextFormField(controller: surgeonCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: const InputDecoration(labelText: 'Surgeon Charges', prefixText: '₹', border: OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: surgeonCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'Surgeon Charges', prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
               ]),
               const SizedBox(height: 12),
               Row(children: [
-                Expanded(child: TextFormField(controller: nursingCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: const InputDecoration(labelText: 'Nursing Charges', prefixText: '₹', border: OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: nursingCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'Nursing Charges', prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
                 const SizedBox(width: 10),
-                Expanded(child: TextFormField(controller: consumablesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: const InputDecoration(labelText: 'Consumables', prefixText: '₹', border: OutlineInputBorder()))),
+                Expanded(child: TextFormField(controller: consumablesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: numFmt, decoration: InputDecoration(labelText: 'Consumables', prefixText: currentCurrencySymbol(), border: const OutlineInputBorder()))),
               ]),
             ]),
           ),
@@ -133,6 +135,8 @@ class _OtPackageMasterScreenState extends State<OtPackageMasterScreen> {
         Icon(Icons.card_giftcard_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('OT Packages', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -143,7 +147,7 @@ class _OtPackageMasterScreenState extends State<OtPackageMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 80);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No packages yet.', style: const TextStyle(color: AppColors.textDisabled)));
@@ -159,7 +163,7 @@ class _OtPackageMasterScreenState extends State<OtPackageMasterScreen> {
             Expanded(
               child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
                 Text(item.packageName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-                Text('Total ₹${item.totalPreview.toStringAsFixed(0)}  ·  OT ₹${item.otCharges.toStringAsFixed(0)} · Surgeon ₹${item.surgeonCharges.toStringAsFixed(0)} · Nursing ₹${item.nursingCharges.toStringAsFixed(0)} · Consumables ₹${item.consumablesCharges.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
+                Text('Total ${currentCurrencySymbol()}${item.totalPreview.toStringAsFixed(0)}  ·  OT ${currentCurrencySymbol()}${item.otCharges.toStringAsFixed(0)} · Surgeon ${currentCurrencySymbol()}${item.surgeonCharges.toStringAsFixed(0)} · Nursing ${currentCurrencySymbol()}${item.nursingCharges.toStringAsFixed(0)} · Consumables ${currentCurrencySymbol()}${item.consumablesCharges.toStringAsFixed(0)}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
               ]),
             ),
             Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: widget.accentColor.withValues(alpha: 0.10), borderRadius: BorderRadius.circular(AppRadius.sm)), child: Text(item.roomCategory == 'private' ? 'Private' : 'General', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: widget.accentColor))),

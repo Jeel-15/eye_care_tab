@@ -6,6 +6,7 @@ import '../utils/date_format.dart';
 import '../services/ot_report_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_error_state.dart';
+import '../widgets/skeleton.dart';
 
 /// Tablet OT report viewer — embedded as an OT Reports hub detail pane
 /// (Pattern A, matching Masters). No own Scaffold/AppBar/back button — the
@@ -112,7 +113,7 @@ class _OtReportViewerScreenState extends State<OtReportViewerScreen> {
       const SizedBox(height: 12),
       Expanded(
         child: _loading
-            ? Center(child: CircularProgressIndicator(color: widget.accentColor))
+            ? const AppSkeletonList(count: 6, itemHeight: 70, padding: EdgeInsets.zero)
             : _error != null
                 ? AppErrorState(message: _error!, onRetry: _load)
                 : _buildTable(),

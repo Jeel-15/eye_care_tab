@@ -21,6 +21,10 @@ import '../widgets/skeleton.dart';
 /// mobile's DraggableScrollableSheet. Business logic (shared simple-master
 /// CRUD base, medicine form data, search/filter/paginate) ported unchanged
 /// from eye_care_app/lib/screens/platform_medicine_master_screen.dart.
+// Hardcoded ₹ here is intentional, not a currency-parity gap — mirrors
+// web's own deliberate INR-only SaaS/plan billing design (see
+// LOCATION_CURRENCY_PARITY_PRD.md Phase 5). Only hospital-facing screens
+// (patient billing, OT, dashboards) use the per-tenant currency.
 class PlatformMedicineMasterScreen extends StatefulWidget {
   final PlatformAdmin admin;
   const PlatformMedicineMasterScreen({super.key, required this.admin});
@@ -130,7 +134,7 @@ abstract class _SimpleMasterTabState<T extends StatefulWidget> extends State<T> 
       builder: (ctx) => AlertDialog(
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text(item == null ? 'Add $_entityLabel' : 'Edit $_entityLabel', style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 15)),
-        content: SizedBox(width: 360, child: Form(key: formKey, child: TextFormField(controller: ctrl, autofocus: true, textCapitalization: TextCapitalization.words, decoration: AppDecorations.inputDecoration(labelText: '$_fieldLabel *'), validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null))),
+        content: SizedBox(width: 360, child: Form(key: formKey, child: TextFormField(controller: ctrl, textCapitalization: TextCapitalization.words, decoration: AppDecorations.inputDecoration(labelText: '$_fieldLabel *'), validator: (v) => (v == null || v.trim().isEmpty) ? 'Required' : null))),
         actions: [
           TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
           ElevatedButton(style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white), onPressed: () { if (formKey.currentState!.validate()) Navigator.pop(ctx, true); }, child: Text(item == null ? 'Add' : 'Save')),
@@ -178,20 +182,23 @@ abstract class _SimpleMasterTabState<T extends StatefulWidget> extends State<T> 
                         itemBuilder: (ctx, i) {
                           final item = _items[i];
                           final isActive = item['is_active'] == true || item['is_active'] == 1;
-                          return Container(
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: AppDecorations.card(),
-                            child: Row(children: [
-                              Expanded(child: Text(item[_fieldKey] as String, style: AppTextStyles.cardTitle)),
-                              Switch(value: isActive, onChanged: (_) async {
-                                final newVal = await _toggleItem(item['id'] as int);
-                                setState(() => item['is_active'] = newVal);
-                              }, activeThumbColor: AppColors.primary, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                              IconButton(icon: Icon(Icons.edit_rounded, size: 18, color: AppColors.primary), onPressed: () => _showForm(item: item), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
-                              const SizedBox(width: 4),
-                              IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _confirmDelete(item), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
-                            ]),
+                          return AnimatedListItem(
+                            index: i,
+                            child: Container(
+                              margin: const EdgeInsets.only(bottom: 6),
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                              decoration: AppDecorations.card(),
+                              child: Row(children: [
+                                Expanded(child: Text(item[_fieldKey] as String, style: AppTextStyles.cardTitle)),
+                                Switch(value: isActive, onChanged: (_) async {
+                                  final newVal = await _toggleItem(item['id'] as int);
+                                  setState(() => item['is_active'] = newVal);
+                                }, activeThumbColor: AppColors.primary, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                IconButton(icon: Icon(Icons.edit_rounded, size: 18, color: AppColors.primary), onPressed: () => _showForm(item: item), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
+                                const SizedBox(width: 4),
+                                IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _confirmDelete(item), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
+                              ]),
+                            ),
                           );
                         },
                       ),
@@ -454,35 +461,38 @@ class _MedicinesTabState extends State<_MedicinesTab> with AutomaticKeepAliveCli
                           itemCount: _items.length,
                           itemBuilder: (ctx, i) {
                             final m = _items[i];
-                            return Container(
-                              padding: const EdgeInsets.all(12),
-                              decoration: AppDecorations.card(),
-                              child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                Expanded(
-                                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                                    Text(m.name, style: AppTextStyles.cardTitle),
-                                    const SizedBox(height: 4),
-                                    Wrap(spacing: 6, runSpacing: 4, children: [
-                                      if (m.typeName != null) _Chip(m.typeName!, AppColors.primary),
-                                      if (m.dosageName != null) _Chip(m.dosageName!, AppColors.teal),
-                                      if (m.duration != null) _Chip(m.duration!, AppColors.orange),
-                                      if (m.price != null) _Chip('₹${m.price!.toStringAsFixed(0)}', AppColors.green),
+                            return AnimatedListItem(
+                              index: i,
+                              child: Container(
+                                padding: const EdgeInsets.all(12),
+                                decoration: AppDecorations.card(),
+                                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                  Expanded(
+                                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                                      Text(m.name, style: AppTextStyles.cardTitle),
+                                      const SizedBox(height: 4),
+                                      Wrap(spacing: 6, runSpacing: 4, children: [
+                                        if (m.typeName != null) _Chip(m.typeName!, AppColors.primary),
+                                        if (m.dosageName != null) _Chip(m.dosageName!, AppColors.teal),
+                                        if (m.duration != null) _Chip(m.duration!, AppColors.orange),
+                                        if (m.price != null) _Chip('₹${m.price!.toStringAsFixed(0)}', AppColors.green),
+                                      ]),
+                                      if (m.composition != null && m.composition!.isNotEmpty) ...[const SizedBox(height: 4), Text(m.composition!, style: AppTextStyles.cardSubtitle, maxLines: 2, overflow: TextOverflow.ellipsis)],
                                     ]),
-                                    if (m.composition != null && m.composition!.isNotEmpty) ...[const SizedBox(height: 4), Text(m.composition!, style: AppTextStyles.cardSubtitle, maxLines: 2, overflow: TextOverflow.ellipsis)],
-                                  ]),
-                                ),
-                                Column(children: [
-                                  Switch(value: m.isActive, onChanged: (_) async {
-                                    final val = await _svc.toggleMedicine(m.id);
-                                    if (!mounted) return;
-                                    setState(() => _items[_items.indexOf(m)] = MasterMedicine(id: m.id, name: m.name, typeId: m.typeId, typeName: m.typeName, dosageId: m.dosageId, dosageName: m.dosageName, duration: m.duration, qty: m.qty, composition: m.composition, company: m.company, price: m.price, isActive: val));
-                                  }, activeThumbColor: AppColors.primary, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
-                                  Row(mainAxisSize: MainAxisSize.min, children: [
-                                    IconButton(icon: Icon(Icons.edit_rounded, size: 18, color: AppColors.primary), onPressed: () => _showForm(item: m), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
-                                    IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _confirmDelete(m), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
+                                  ),
+                                  Column(children: [
+                                    Switch(value: m.isActive, onChanged: (_) async {
+                                      final val = await _svc.toggleMedicine(m.id);
+                                      if (!mounted) return;
+                                      setState(() => _items[_items.indexOf(m)] = MasterMedicine(id: m.id, name: m.name, typeId: m.typeId, typeName: m.typeName, dosageId: m.dosageId, dosageName: m.dosageName, duration: m.duration, qty: m.qty, composition: m.composition, company: m.company, price: m.price, isActive: val));
+                                    }, activeThumbColor: AppColors.primary, materialTapTargetSize: MaterialTapTargetSize.shrinkWrap),
+                                    Row(mainAxisSize: MainAxisSize.min, children: [
+                                      IconButton(icon: Icon(Icons.edit_rounded, size: 18, color: AppColors.primary), onPressed: () => _showForm(item: m), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
+                                      IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _confirmDelete(m), padding: const EdgeInsets.all(4), constraints: const BoxConstraints()),
+                                    ]),
                                   ]),
                                 ]),
-                              ]),
+                              ),
                             );
                           },
                         ),

@@ -10,11 +10,13 @@ import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/coming_soon_pane.dart';
 import '../widgets/secret_tap_area.dart';
+import '../utils/refreshable.dart';
 import 'clinical_queue_screen.dart';
 import 'dashboard_screen.dart';
 import 'doctor_dashboard_screen.dart';
 import 'doctor_ot_list_screen.dart';
-import 'foc_screen.dart';
+// FOC Requests disabled at client's request — see foc_screen.dart.
+// import 'foc_screen.dart';
 import 'login_screen.dart';
 import 'masters_screen.dart';
 import 'medicines_screen.dart';
@@ -35,6 +37,7 @@ import 'settings_screen.dart';
 import 'share_history_screen.dart';
 import 'users_screen.dart';
 import '../utils/medicines_tab.dart';
+import '../widgets/retry_network_image.dart';
 
 /// Tablet app shell — persistent left NavigationRail replacing mobile's
 /// bottom-nav + drawer combo. See EYE_CARE_TAB_PRD.md §4.
@@ -51,6 +54,13 @@ class TabletShell extends StatefulWidget {
 class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
   String _selected = 'dashboard';
   final _scaffoldKey = GlobalKey<ScaffoldState>();
+
+  // Reused across whichever rail entry is currently shown — lets
+  // _silentRefresh() reach that screen's own reload method on app resume.
+  // Only the small set of screens that implement Refreshable respond; all
+  // others no-op safely (the `is` check below just fails).
+  // See ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 4.
+  final GlobalKey _contentKey = GlobalKey();
   // null = follow width breakpoint automatically; set once the user taps the
   // rail's manual expand/collapse toggle, and sticks until toggled again.
   bool? _expandOverride;
@@ -104,6 +114,10 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
       } else {
         setState(() {});
       }
+      // Reload the currently visible module's own data — the setState above
+      // only refreshes permissions/nav, not the screen's cached data.
+      final contentState = _contentKey.currentState;
+      if (contentState is Refreshable) (contentState as Refreshable).refreshSilently();
     } catch (_) {
       // Network error — keep current state, don't disrupt user
     }
@@ -135,8 +149,9 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
           const _RailEntry('patients', Icons.people_alt_rounded, 'Patients'),
           const _RailEntry('share_history', Icons.share_rounded, 'Share History'),
         ],
-        if (p.can(Perm.opdFocCreate) || p.can(Perm.opdFocAccept))
-          const _RailEntry('foc', Icons.receipt_long_rounded, 'FOC Requests'),
+        // FOC Requests disabled at client's request — see foc_screen.dart.
+        // if (p.can(Perm.opdFocCreate) || p.can(Perm.opdFocAccept))
+        //   const _RailEntry('foc', Icons.receipt_long_rounded, 'FOC Requests'),
       ]),
       _RailGroup('Clinical', [
         if (p.can(Perm.opdExamPrimary) || p.can(Perm.opdExamSecondary))
@@ -199,14 +214,14 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
     switch (id) {
       case 'dashboard':
         return _isDoctor
-            ? DoctorDashboardScreen(user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id))
-            : DashboardScreen(user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id));
+            ? DoctorDashboardScreen(key: _contentKey, user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id))
+            : DashboardScreen(key: _contentKey, user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id));
       case 'doctor_ot_list':
         return const DoctorOtListScreen();
       case 'patients':
-        return PatientsScreen(user: widget.user, hospital: widget.hospital);
+        return PatientsScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
       case 'queue':
-        return ClinicalQueueScreen(user: widget.user, hospital: widget.hospital);
+        return ClinicalQueueScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
       case 'masters':
         return const MastersScreen();
       case 'ot_appointments':
@@ -238,13 +253,14 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
       case 'dosages':
         return const MedicinesScreen(initialTab: MedicinesTab.dosages);
       case 'reports':
-        return ReportsScreen(user: widget.user, hospital: widget.hospital);
+        return ReportsScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
       case 'users':
         return UsersScreen(user: widget.user, hospital: widget.hospital);
       case 'roles':
         return RolesScreen(user: widget.user, hospital: widget.hospital);
-      case 'foc':
-        return FocScreen(user: widget.user, hospital: widget.hospital);
+      // FOC Requests disabled at client's request — see foc_screen.dart.
+      // case 'foc':
+      //   return FocScreen(user: widget.user, hospital: widget.hospital);
       case 'settings':
         return SettingsScreen(user: widget.user, hospital: widget.hospital);
       case 'profile':
@@ -525,7 +541,22 @@ class _TabletRail extends StatelessWidget {
     );
   }
 
-  Widget _initialsBadge(String initials) => Container(
+  /// Sidebar brand mark — mirrors web's rule: the bg-removed logo (with a
+  /// white-silhouette tint) is only used when style is 'white' and a nobg
+  /// version exists; 'original_blur' shows the plain logo in a frosted box;
+  /// hospitals with no logo at all keep the initials avatar unchanged.
+  Widget _initialsBadge(String initials) {
+    // Read the live session cache, not the `hospital` constructor param —
+    // that's a snapshot frozen at login/launch and never updates in-place
+    // when a logo is changed elsewhere mid-session (same reasoning as
+    // currentCurrencySymbol() in currency_format.dart).
+    final live = AuthService.instance.cachedHospital;
+    final logoUrl = live?.logoUrl ?? hospital.logoUrl;
+    final logoNobgUrl = live?.logoNobgUrl ?? hospital.logoNobgUrl;
+    final logoSidebarStyle = live?.logoSidebarStyle ?? hospital.logoSidebarStyle;
+
+    if (logoUrl.isEmpty) {
+      return Container(
         width: 38,
         height: 38,
         decoration: BoxDecoration(
@@ -535,6 +566,37 @@ class _TabletRail extends StatelessWidget {
         alignment: Alignment.center,
         child: Text(initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13)),
       );
+    }
+
+    final useNobg = logoSidebarStyle == 'white' && logoNobgUrl.isNotEmpty;
+    final logoSrc = useNobg ? logoNobgUrl : logoUrl;
+    final image = RetryNetworkImage(
+      url: logoSrc,
+      fit: BoxFit.contain,
+      fallbackBuilder: (_) => Text(initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13)),
+    );
+
+    if (logoSidebarStyle == 'original_blur') {
+      return Container(
+        width: 38,
+        height: 38,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.20), borderRadius: BorderRadius.circular(10)),
+        child: image,
+      );
+    }
+
+    return SizedBox(
+      width: 38,
+      height: 38,
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: useNobg
+            ? ColorFiltered(colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcATop), child: image)
+            : image,
+      ),
+    );
+  }
 
   Widget _sectionLabel(String label) => Padding(
         padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
@@ -595,41 +657,40 @@ class _TabletRail extends StatelessWidget {
       decoration: BoxDecoration(border: Border(top: BorderSide(color: AppColors.primaryA08))),
       child: Column(
         children: [
-          if (!isAdmin)
-            Material(
-              color: Colors.transparent,
-              child: InkWell(
-                onTap: onProfile,
-                borderRadius: BorderRadius.circular(AppRadius.md),
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
-                  child: extended
-                      ? Row(
-                          children: [
-                            _smallAvatar(initials),
-                            const SizedBox(width: 10),
-                            Expanded(
-                              child: Column(
-                                crossAxisAlignment: CrossAxisAlignment.start,
-                                children: [
-                                  Text(user.name,
+          Material(
+            color: Colors.transparent,
+            child: InkWell(
+              onTap: onProfile,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 4),
+                child: extended
+                    ? Row(
+                        children: [
+                          _smallAvatar(initials),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text(user.name,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
+                                if (user.role != null)
+                                  Text(user.role!.name,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
-                                  if (user.role != null)
-                                    Text(user.role!.name,
-                                        maxLines: 1,
-                                        overflow: TextOverflow.ellipsis,
-                                        style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
-                                ],
-                              ),
+                                      style: TextStyle(fontSize: 10, fontWeight: FontWeight.w600, color: AppColors.textSecondary)),
+                              ],
                             ),
-                          ],
-                        )
-                      : Center(child: _smallAvatar(initials)),
-                ),
+                          ),
+                        ],
+                      )
+                    : Center(child: _smallAvatar(initials)),
               ),
             ),
+          ),
           Material(
             color: Colors.transparent,
             child: InkWell(

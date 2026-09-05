@@ -1,12 +1,14 @@
 import 'package:flutter/material.dart';
-import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../models/ot_booking_models.dart';
 import '../services/ot_discharge_service.dart';
+import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_pagination_bar.dart';
+import '../widgets/skeleton.dart';
+import '../widgets/split_pane_scaffold.dart';
 import '../widgets/status_badge.dart';
 import 'ot_discharge_detail_screen.dart';
 
@@ -60,28 +62,13 @@ class _OtDischargeDashboardScreenState extends State<OtDischargeDashboardScreen>
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(builder: (context, constraints) {
-      final splitView = constraints.maxWidth >= AppBreakpoints.medium;
-      final listPane = _buildListPane();
-      final detailPane = _buildDetailPane();
-
-      if (!splitView) {
-        return _paneMode != _PaneMode.list
-            ? Column(children: [
-                TextButton.icon(onPressed: _closePane, icon: const Icon(Icons.arrow_back_rounded, size: 18), label: const Text('Back to list')),
-                Expanded(child: detailPane),
-              ])
-            : listPane;
-      }
-      return Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SizedBox(width: 420, child: listPane),
-          const SizedBox(width: 20),
-          Expanded(child: detailPane),
-        ],
-      );
-    });
+    return SplitPaneScaffold(
+      showDetail: _paneMode != _PaneMode.list,
+      onBack: _closePane,
+      listPane: _buildListPane(),
+      detailPane: _buildDetailPane(),
+      listPaneWidth: 420,
+    );
   }
 
   // ── List pane ────────────────────────────────────────────────────────
@@ -105,7 +92,7 @@ class _OtDischargeDashboardScreenState extends State<OtDischargeDashboardScreen>
         ),
         Expanded(
           child: _loading
-              ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+              ? const AppSkeletonList(count: 6, itemHeight: 80)
               : _error != null
                   ? AppErrorState(message: _error!, onRetry: _load)
                   : _buildBody(),
@@ -126,7 +113,7 @@ class _OtDischargeDashboardScreenState extends State<OtDischargeDashboardScreen>
         padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
         itemCount: _items.length,
         separatorBuilder: (_, _) => const SizedBox(height: 8),
-        itemBuilder: (_, i) => _bookingCard(_items[i]),
+        itemBuilder: (_, i) => AnimatedListItem(index: i, child: _bookingCard(_items[i])),
       ),
     );
   }

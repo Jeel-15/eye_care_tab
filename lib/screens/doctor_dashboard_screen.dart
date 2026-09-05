@@ -8,9 +8,12 @@ import '../models/doctor_dashboard_models.dart';
 import '../models/patient_models.dart';
 import '../services/doctor_dashboard_service.dart';
 import '../utils/app_route.dart';
+import '../utils/refreshable.dart';
+import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/exam/dilation_lock.dart';
+import '../widgets/skeleton.dart';
 import 'doctor_ot_list_screen.dart';
 import 'patient_history_route.dart';
 import 'primary_exam_screen.dart';
@@ -36,7 +39,7 @@ class DoctorDashboardScreen extends StatefulWidget {
   State<DoctorDashboardScreen> createState() => _DoctorDashboardScreenState();
 }
 
-class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
+class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> implements Refreshable {
   DoctorDashboardData? _data;
   bool _loading = true;
   String? _error;
@@ -57,6 +60,9 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
     _tickTimer?.cancel();
     super.dispose();
   }
+
+  @override
+  Future<void> refreshSilently() => _load();
 
   Future<void> _load() async {
     setState(() {
@@ -89,7 +95,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
   @override
   Widget build(BuildContext context) {
     if (_loading && _data == null) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 5, itemHeight: 90);
     }
     if (_error != null && _data == null) {
       return _buildError();
@@ -117,6 +123,8 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
         _buildHeader(),
         const SizedBox(height: 18),
         _buildStatCards(data.stats),
+        const SizedBox(height: 10),
+        _buildHospitalTodayBar(data),
         if (data.doctorCards.isNotEmpty) ...[
           const SizedBox(height: 16),
           _buildDoctorStrip(data.doctorCards),
@@ -194,8 +202,31 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
     );
   }
 
+  /// Hospital-wide today/primary/secondary counts, shown alongside the
+  /// doctor's own stats — mirrors web's `doctoredashboard.blade.php:756-760`
+  /// "C: / PC: / SC:" bar (tenant-wide, not filtered to this doctor).
+  Widget _buildHospitalTodayBar(DoctorDashboardData data) {
+    Widget stat(String label, int value) => Text(
+          '$label: $value',
+          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.textSecondary),
+        );
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.08)),
+      ),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: [
+        stat('C', data.tenantTodayPatients),
+        stat('PC', data.tenantTodayPrimary),
+        stat('SC', data.tenantTodaySecondary),
+      ]),
+    );
+  }
+
   Widget _reportsCard() {
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: () => widget.onNavigate('reports'),
       child: _cardBox(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -239,7 +270,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
 
   Widget _buildDoctorCard(DoctorCardInfo doc) {
     final isSelected = _viewingDoctorId == null ? doc.isSelf : _viewingDoctorId == doc.id;
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: () => _selectDoctor(doc.isSelf && _viewingDoctorId == null ? null : doc.id),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -325,7 +356,7 @@ class _DoctorDashboardScreenState extends State<DoctorDashboardScreen> {
   }
 
   Widget _buildOtDoctorCard(OtDoctorCardInfo doc) {
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: () => doc.isSelf
           ? widget.onNavigate('doctor_ot_list')
           : Navigator.of(context, rootNavigator: true).push(appRoute(DoctorOtListScreen(doctorId: doc.id))),

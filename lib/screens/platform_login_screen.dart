@@ -5,6 +5,7 @@ import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/platform_auth_service.dart';
+import '../utils/app_route.dart';
 import 'platform_shell.dart';
 
 /// Tablet Platform Super Admin login — reached only via the hidden 5-tap
@@ -77,13 +78,7 @@ class _PlatformLoginScreenState extends State<PlatformLoginScreen> with TickerPr
     if (!mounted) return;
 
     if (result.success) {
-      Navigator.of(context).pushReplacement(
-        PageRouteBuilder(
-          pageBuilder: (_, _, _) => PlatformShell(admin: result.admin!),
-          transitionsBuilder: (_, animation, _, child) => FadeTransition(opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut), child: child),
-          transitionDuration: const Duration(milliseconds: 350),
-        ),
-      );
+      pushAppRouteReplacement(context, PlatformShell(admin: result.admin!));
     } else {
       setState(() { _isLoading = false; _errorMessage = result.message; });
       HapticFeedback.mediumImpact();

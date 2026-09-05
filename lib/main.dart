@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'screens/splash_screen.dart';
+import 'services/access_guard.dart';
 import 'theme/app_theme.dart';
 
 void main() {
@@ -27,6 +28,7 @@ class EyeSaasTabletApp extends StatelessWidget {
     return MaterialApp(
       title: 'Eye-SaaS HMS — Tablet',
       debugShowCheckedModeBanner: false,
+      navigatorKey: AccessGuard.instance.navigatorKey,
       theme: AppTheme.light,
       home: const SplashScreen(),
     );

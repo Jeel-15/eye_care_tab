@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'package:http/http.dart' as http;
 import 'package:pdf/pdf.dart';
 import 'package:pdf/widgets.dart' as pw;
 import '../models/patient_history_models.dart';
@@ -15,9 +16,11 @@ class PrescriptionService {
     required String hospitalName,
     required ExamRecord exam,
     required PatientHistorySummary patient,
+    String? hospitalLogoUrl,
   }) async {
     final doc = pw.Document();
     final rxLines = exam.prescriptions;
+    final logo = await _fetchLogo(hospitalLogoUrl);
 
     final dateStr = _fmtDate(exam.examinedAt);
     final patientAge =
@@ -35,6 +38,10 @@ class PrescriptionService {
           // ── Header ────────────────────────────────────────────────────────
           pw.Center(
             child: pw.Column(children: [
+              if (logo != null) ...[
+                pw.Image(logo, height: 40, fit: pw.BoxFit.contain),
+                pw.SizedBox(height: 6),
+              ],
               pw.Text(
                 hospitalName,
                 style: pw.TextStyle(
@@ -162,6 +169,18 @@ class PrescriptionService {
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────────
+
+  Future<pw.MemoryImage?> _fetchLogo(String? url) async {
+    if (url == null || url.isEmpty) return null;
+    try {
+      final res = await http.get(Uri.parse(url)).timeout(const Duration(seconds: 5));
+      if (res.statusCode == 200) return pw.MemoryImage(res.bodyBytes);
+    } catch (_) {
+      // Logo is a nice-to-have on the printed prescription — never block
+      // generation over a failed/slow image fetch.
+    }
+    return null;
+  }
 
   pw.Widget _labelValue(String label, String value) {
     return pw.Padding(

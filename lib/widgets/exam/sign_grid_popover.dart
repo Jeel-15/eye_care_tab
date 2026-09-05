@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../../constants/app_colors.dart';
 import '../../constants/app_radius.dart';
 import '../../services/exam_masters_service.dart';
+import '../app_animations.dart';
 
 /// SPH/CYL sign-toggle grid picker (PG/ST). Content-only widget shown via
 /// `PopoverController.show`. Mobile shows this as a full-screen dialog;
@@ -60,7 +61,7 @@ class _SignGridPopoverState extends State<SignGridPopover> {
               Expanded(
                 child: Padding(
                   padding: const EdgeInsets.symmetric(horizontal: 2),
-                  child: GestureDetector(
+                  child: PressScaleWrapper(
                     onTap: () => setState(() {
                       final prev = _sign;
                       _sign = s;
@@ -111,7 +112,7 @@ class _SignGridPopoverState extends State<SignGridPopover> {
                 ),
               ),
               const SizedBox(width: 6),
-              GestureDetector(
+              PressScaleWrapper(
                 onTap: () {
                   final custom = _customCtrl.text.trim();
                   String? result;
@@ -130,7 +131,7 @@ class _SignGridPopoverState extends State<SignGridPopover> {
             const SizedBox(height: 6),
             Align(
               alignment: Alignment.centerLeft,
-              child: GestureDetector(
+              child: PressScaleWrapper(
                 onTap: () { widget.onApply(''); widget.onClose(); },
                 child: Text('Clear', style: TextStyle(fontSize: 11, color: Colors.red.shade600, fontWeight: FontWeight.w600)),
               ),
@@ -142,7 +143,7 @@ class _SignGridPopoverState extends State<SignGridPopover> {
   }
 
   Widget _chip(String label, bool sel, bool fav, VoidCallback onTap) {
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: onTap,
       child: Container(
         width: 54,
@@ -156,7 +157,7 @@ class _SignGridPopoverState extends State<SignGridPopover> {
 
   Widget _zeroChip() {
     final sel = _selected == '0.00';
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: () => setState(() => _selected = '0.00'),
       child: Container(
         width: 54,

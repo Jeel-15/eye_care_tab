@@ -10,11 +10,9 @@ import '../services/exam_masters_service.dart';
 import '../services/exam_service.dart';
 import '../services/referrer_service.dart';
 import '../services/simple_master_service.dart';
-import '../constants/permissions.dart';
-import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/exam/exam_field_widgets.dart';
-import '../widgets/ot/recommend_surgery_dialog.dart';
+import '../widgets/skeleton.dart';
 
 class _CoRow {
   final TextEditingController complaintCtrl;
@@ -338,7 +336,7 @@ class _PrimaryExamScreenState extends State<PrimaryExamScreen> {
           _buildHeader(),
           Expanded(
             child: _loading
-                ? Center(child: CircularProgressIndicator(color: AppColors.primary))
+                ? const AppSkeletonList(count: 5, itemHeight: 120)
                 : _loadError != null
                     ? _buildError()
                     : SingleChildScrollView(padding: const EdgeInsets.all(20), child: _buildGrid()),
@@ -366,12 +364,6 @@ class _PrimaryExamScreenState extends State<PrimaryExamScreen> {
                 Text('${p.fullName}  ·  MRD: ${p.patientCode}', style: TextStyle(color: Colors.white.withValues(alpha: 0.75), fontSize: 11)),
               ]),
             ),
-            if (PermissionService.instance.can(Perm.otSurgeryRecommend))
-              IconButton(
-                icon: const Icon(Icons.medical_services_rounded, color: Colors.white),
-                tooltip: 'Recommend Surgery',
-                onPressed: () => showRecommendSurgeryDialog(context, patient: widget.patient),
-              ),
           ]),
         ),
       ),
@@ -509,7 +501,7 @@ class _PrimaryExamScreenState extends State<PrimaryExamScreen> {
         if (favs.isNotEmpty) ...[
           Wrap(spacing: 6, runSpacing: 6, children: favs.map((item) {
             final sel = _historyChips.contains(item.value);
-            return GestureDetector(onTap: () { if (!sel) setState(() => _historyChips.add(item.value)); }, child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: sel ? Colors.amber.shade50 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: Colors.amber.shade300)), child: Text(item.value, style: TextStyle(fontSize: 11, color: Colors.amber.shade900, fontWeight: FontWeight.w600))));
+            return PressScaleWrapper(onTap: () { if (!sel) setState(() => _historyChips.add(item.value)); }, child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: sel ? Colors.amber.shade50 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: Colors.amber.shade300)), child: Text(item.value, style: TextStyle(fontSize: 11, color: Colors.amber.shade900, fontWeight: FontWeight.w600))));
           }).toList()),
           const SizedBox(height: 8),
         ],
@@ -735,7 +727,7 @@ class _PrimaryExamScreenState extends State<PrimaryExamScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Pseudophakia — $eye', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
           const SizedBox(height: 8),
-          Wrap(spacing: 6, children: ['Block', 'Phaco'].map((o) => GestureDetector(onTap: () => setState(() => onOp(o)), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), decoration: BoxDecoration(color: opType == o ? AppColors.primary : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: opType == o ? AppColors.primary : AppColors.primaryA20)), child: Text(o, style: TextStyle(fontSize: 11, color: opType == o ? Colors.white : AppColors.primary))))).toList()),
+          Wrap(spacing: 6, children: ['Block', 'Phaco'].map((o) => PressScaleWrapper(onTap: () => setState(() => onOp(o)), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), decoration: BoxDecoration(color: opType == o ? AppColors.primary : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: opType == o ? AppColors.primary : AppColors.primaryA20)), child: Text(o, style: TextStyle(fontSize: 11, color: opType == o ? Colors.white : AppColors.primary))))).toList()),
           const SizedBox(height: 8),
           Row(children: [
             Expanded(child: _simpleField(initial: exp.text, hint: 'Expense', onChanged: (v) => exp.text = v)),
@@ -808,7 +800,7 @@ class _PrimaryExamScreenState extends State<PrimaryExamScreen> {
 
   // ── Small shared helpers ──────────────────────────────────────────────
 
-  Widget _addBtn(VoidCallback onTap) => GestureDetector(onTap: onTap, child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppColors.primaryA12, borderRadius: BorderRadius.circular(AppRadius.xl)), child: Icon(Icons.add_rounded, color: AppColors.primary, size: 16)));
+  Widget _addBtn(VoidCallback onTap) => PressScaleWrapper(onTap: onTap, child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppColors.primaryA12, borderRadius: BorderRadius.circular(AppRadius.xl)), child: Icon(Icons.add_rounded, color: AppColors.primary, size: 16)));
 
   Widget _emptyHint(String text) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(text, style: TextStyle(fontSize: 12, color: AppColors.primaryA40, fontStyle: FontStyle.italic)));
 

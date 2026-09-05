@@ -5,12 +5,14 @@ import '../models/auth_models.dart';
 import '../models/ot_appointment_models.dart';
 import '../models/patient_models.dart';
 import '../utils/date_format.dart';
+import '../services/base_service.dart' show StaleRecordException;
 import '../services/masters_service.dart';
 import '../services/patient_service.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../utils/phone_rules.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 
 enum PatientFormMode { addWalkIn, addPhone, edit }
 
@@ -350,6 +352,11 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       if (isEdit) {
         data['case_fee'] = double.tryParse(_caseFeeCtrl.text.trim()) ?? 0;
         data['case_id'] = _selectedCaseId;
+        // Optimistic-concurrency guard — see
+        // ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5.
+        if (widget.patient!.updatedAt != null) {
+          data['expected_updated_at'] = widget.patient!.updatedAt!.toIso8601String();
+        }
         saved = await PatientService.instance.updatePatient(widget.patient!.id, data);
       } else if (isPhone) {
         saved = await PatientService.instance.registerPhone(data);
@@ -358,6 +365,12 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       }
 
       if (mounted) widget.onSaved(saved);
+    } on StaleRecordException catch (e) {
+      if (mounted) {
+        setState(() => _submitting = false);
+        await showStaleRecordDialog(context, e.humanMessage, widget.onCancel);
+      }
+      return;
     } catch (e) {
       if (mounted) showAppSnackBar(context, e.toString(), isError: true, duration: const Duration(seconds: 4));
     } finally {
@@ -368,7 +381,7 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   @override
   Widget build(BuildContext context) {
     if (_mastersLoading) {
-      return Center(child: CircularProgressIndicator(color: AppColors.primary));
+      return const AppSkeletonList(count: 6, itemHeight: 60);
     }
     if (_mastersError != null) {
       return Center(
@@ -454,7 +467,7 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
             _row2(
               _field('Case Type *', _caseTypeDropdown()),
               _field(
-                'Case Fee (₹) *',
+                'Case Fee (${widget.hospital.currencySymbol}) *',
                 _textField(_caseFeeCtrl, 'Case Fee', inputType: TextInputType.number, required: true, readOnly: widget.mode == PatientFormMode.addWalkIn, hintOverride: widget.mode == PatientFormMode.addWalkIn ? 'Auto-filled from Case Type' : null),
               ),
             ),

@@ -154,12 +154,11 @@ class PatientService with AuthenticatedService {
             body: jsonEncode(data))
         .timeout(AppConfig.requestTimeout);
 
-    if (resp.statusCode != 200) {
-      final body = jsonDecode(resp.body) as Map<String, dynamic>;
-      throw Exception(body['message'] ?? 'Failed to update patient.');
-    }
-
-    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    // Routed through the shared parser (was hand-rolled before) so this
+    // call site also gets the blocked-tenant/session-expired/stale-record
+    // handling every other endpoint has. See
+    // ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5.
+    final body = parseApiResponse(resp);
     return Patient.fromJson(body['data'] as Map<String, dynamic>);
   }
 

@@ -59,6 +59,14 @@ class HospitalUserModel {
   final int? experienceYears;
   final String? signatureUrl;
   final String? profilePhotoUrl;
+  // Plain-text password — only ever present when the requesting user is a
+  // Hospital Admin (backend gates this). See
+  // USER_PASSWORD_VISIBILITY_PARITY_PLAN.md.
+  final String? originalPassword;
+  // Round-tripped as `expected_updated_at` on the next edit for
+  // optimistic-concurrency conflict detection. See
+  // ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5.
+  final DateTime? updatedAt;
 
   const HospitalUserModel({
     required this.id,
@@ -75,6 +83,8 @@ class HospitalUserModel {
     this.experienceYears,
     this.signatureUrl,
     this.profilePhotoUrl,
+    this.originalPassword,
+    this.updatedAt,
   });
 
   factory HospitalUserModel.fromJson(Map<String, dynamic> j) => HospitalUserModel(
@@ -94,6 +104,8 @@ class HospitalUserModel {
         experienceYears: (j['experience_years'] as num?)?.toInt(),
         signatureUrl:    j['signature_url'] as String?,
         profilePhotoUrl: j['profile_photo_url'] as String?,
+        originalPassword: j['original_password'] as String?,
+        updatedAt: j['updated_at'] != null ? DateTime.tryParse(j['updated_at'] as String) : null,
       );
 }
 
@@ -275,6 +287,7 @@ class UserService with AuthenticatedService {
     bool clearSignature = false,
     File? profilePhoto,
     bool clearProfilePhoto = false,
+    DateTime? expectedUpdatedAt,
   }) async {
     final request = http.MultipartRequest(
       'POST',
@@ -288,6 +301,11 @@ class UserService with AuthenticatedService {
     request.fields['role_id']        = roleId.toString();
     request.fields['status']         = status;
     request.fields['foc_permission'] = focPermission ? '1' : '0';
+    // Optimistic-concurrency guard — see
+    // ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5.
+    if (expectedUpdatedAt != null) {
+      request.fields['expected_updated_at'] = expectedUpdatedAt.toIso8601String();
+    }
 
     if (password != null && password.isNotEmpty) {
       request.fields['password']              = password;

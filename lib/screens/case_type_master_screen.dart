@@ -3,6 +3,8 @@ import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/case_type_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
+import '../utils/currency_format.dart';
 
 /// Tablet Case Types master — name + fee. Embedded as a Masters hub detail
 /// pane. Ported from eye_care_app/lib/screens/case_type_master_screen.dart.
@@ -79,9 +81,9 @@ class _CaseTypeMasterScreenState extends State<CaseTypeMasterScreen> {
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
         title: Text(item == null ? 'Add Case Type' : 'Edit Case Type'),
         content: SizedBox(width: 360, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          TextFormField(controller: nameCtrl, autofocus: true, decoration: InputDecoration(labelText: 'Case Type', errorText: nameErr, border: const OutlineInputBorder())),
+          TextFormField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Case Type', errorText: nameErr, border: const OutlineInputBorder())),
           const SizedBox(height: 12),
-          TextFormField(controller: feeCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'Case Fee (₹)', errorText: feeErr, border: const OutlineInputBorder())),
+          TextFormField(controller: feeCtrl, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: 'Case Fee (${currentCurrencySymbol()})', errorText: feeErr, border: const OutlineInputBorder())),
         ])),
         actions: [
           TextButton(onPressed: saving ? null : () => Navigator.pop(dCtx), child: const Text('Cancel')),
@@ -100,6 +102,8 @@ class _CaseTypeMasterScreenState extends State<CaseTypeMasterScreen> {
         Icon(Icons.folder_open_rounded, color: widget.accentColor, size: 20),
         const SizedBox(width: 10),
         const Expanded(child: Text('Case Types', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
+        const SizedBox(width: 4),
         ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
       ]),
       const SizedBox(height: 14),
@@ -110,7 +114,7 @@ class _CaseTypeMasterScreenState extends State<CaseTypeMasterScreen> {
   }
 
   Widget _buildBody() {
-    if (_loading) return Center(child: CircularProgressIndicator(color: widget.accentColor));
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 60, padding: EdgeInsets.zero);
     if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
     final items = _filtered;
     if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No case types yet.', style: const TextStyle(color: AppColors.textDisabled)));
@@ -124,7 +128,7 @@ class _CaseTypeMasterScreenState extends State<CaseTypeMasterScreen> {
           decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
           child: Row(children: [
             Expanded(child: Text(item.caseType, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600))),
-            Text('₹${item.caseFee.toInt()}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: widget.accentColor)),
+            Text('${currentCurrencySymbol()}${item.caseFee.toInt()}', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: widget.accentColor)),
             const SizedBox(width: 12),
             IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
             IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),

@@ -12,6 +12,8 @@ class HospitalSettingsData {
   final String hospitalPhone;
   final String hospitalAddress;
   final String hospitalLogoUrl;
+  final String hospitalLogoNobgUrl;
+  final String logoSidebarStyle;
   // Location names
   final String hospitalCountry;
   final String hospitalState;
@@ -52,6 +54,8 @@ class HospitalSettingsData {
     required this.hospitalPhone,
     required this.hospitalAddress,
     required this.hospitalLogoUrl,
+    this.hospitalLogoNobgUrl = '',
+    this.logoSidebarStyle = 'white',
     required this.hospitalCountry,
     required this.hospitalState,
     required this.hospitalDistrict,
@@ -85,6 +89,8 @@ class HospitalSettingsData {
         hospitalPhone:       j['hospital_phone']    as String? ?? '',
         hospitalAddress:     j['hospital_address']  as String? ?? '',
         hospitalLogoUrl:     j['hospital_logo_url'] as String? ?? '',
+        hospitalLogoNobgUrl: j['hospital_logo_nobg_url'] as String? ?? '',
+        logoSidebarStyle:    j['logo_sidebar_style'] as String? ?? 'white',
         hospitalCountry:     j['hospital_country']  as String? ?? '',
         hospitalCountryId:   (j['hospital_country_id'] as num?)?.toInt(),
         hospitalState:       j['hospital_state']    as String? ?? '',
@@ -192,6 +198,7 @@ class SettingsService with AuthenticatedService {
     required int paginationLimit,
     required int defaultDilationTime,
     required Map<String, int> waitThresholds,
+    String? logoSidebarStyle,
   }) async {
     final payload = <String, dynamic>{
       'hospital_name':         hospitalName,
@@ -211,6 +218,7 @@ class SettingsService with AuthenticatedService {
       'pagination_limit':      paginationLimit,
       'default_dilation_time': defaultDilationTime,
       ...waitThresholds,
+      if (logoSidebarStyle != null) 'logo_sidebar_style': logoSidebarStyle,
     };
 
     final res = await http

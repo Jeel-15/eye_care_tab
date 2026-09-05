@@ -17,6 +17,7 @@ import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/exam/exam_field_widgets.dart';
 import '../widgets/ot/recommend_surgery_dialog.dart';
+import '../widgets/skeleton.dart';
 
 class _CoRow {
   final TextEditingController complaintCtrl;
@@ -392,7 +393,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
           if (_prefillSource == 'primary') _primaryBanner(),
           Expanded(
             child: _loading
-                ? Center(child: CircularProgressIndicator(color: AppColors.teal))
+                ? const AppSkeletonList(count: 5, itemHeight: 120)
                 : _loadError != null
                     ? _buildError()
                     : SingleChildScrollView(padding: const EdgeInsets.all(20), child: _buildGrid()),
@@ -578,7 +579,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
         if (favs.isNotEmpty) ...[
           Wrap(spacing: 6, runSpacing: 6, children: favs.map((item) {
             final sel = _historyChips.contains(item.value);
-            return GestureDetector(onTap: () { if (!sel) setState(() => _historyChips.add(item.value)); }, child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: sel ? Colors.amber.shade50 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: Colors.amber.shade300)), child: Text(item.value, style: TextStyle(fontSize: 11, color: Colors.amber.shade900, fontWeight: FontWeight.w600))));
+            return PressScaleWrapper(onTap: () { if (!sel) setState(() => _historyChips.add(item.value)); }, child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: sel ? Colors.amber.shade50 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: Colors.amber.shade300)), child: Text(item.value, style: TextStyle(fontSize: 11, color: Colors.amber.shade900, fontWeight: FontWeight.w600))));
           }).toList()),
           const SizedBox(height: 8),
         ],
@@ -779,7 +780,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
         child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
           Text('Pseudophakia — $eye', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
           const SizedBox(height: 8),
-          Wrap(spacing: 6, children: ['Block', 'Phaco'].map((o) => GestureDetector(onTap: () => setState(() => onOp(o)), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), decoration: BoxDecoration(color: opType == o ? AppColors.primary : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: opType == o ? AppColors.primary : AppColors.primaryA20)), child: Text(o, style: TextStyle(fontSize: 11, color: opType == o ? Colors.white : AppColors.primary))))).toList()),
+          Wrap(spacing: 6, children: ['Block', 'Phaco'].map((o) => PressScaleWrapper(onTap: () => setState(() => onOp(o)), child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5), decoration: BoxDecoration(color: opType == o ? AppColors.primary : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: opType == o ? AppColors.primary : AppColors.primaryA20)), child: Text(o, style: TextStyle(fontSize: 11, color: opType == o ? Colors.white : AppColors.primary))))).toList()),
           const SizedBox(height: 8),
           Row(children: [Expanded(child: _simpleField(initial: exp.text, hint: 'Expense', onChanged: (v) => exp.text = v)), const SizedBox(width: 8), Expanded(child: TextPickerField(controller: hosp, hint: 'Hospital', items: _referrers, onChanged: (_) {}))]),
         ]),
@@ -861,7 +862,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
           if (_selectedDiagnosisIds.isNotEmpty) ...[
             Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2), decoration: BoxDecoration(color: AppColors.teal, borderRadius: BorderRadius.circular(AppRadius.md)), child: Text('${_selectedDiagnosisIds.length} selected', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w600))),
             const Spacer(),
-            GestureDetector(onTap: () => setState(() => _selectedDiagnosisIds.clear()), child: Text('Clear all', style: TextStyle(fontSize: 11, color: Colors.red.shade600, fontWeight: FontWeight.w600))),
+            PressScaleWrapper(onTap: () => setState(() => _selectedDiagnosisIds.clear()), child: Text('Clear all', style: TextStyle(fontSize: 11, color: Colors.red.shade600, fontWeight: FontWeight.w600))),
           ],
         ]),
         const SizedBox(height: 8),
@@ -875,9 +876,9 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
             return Container(
               decoration: BoxDecoration(color: sel ? AppColors.teal : Colors.white, borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: sel ? AppColors.teal : AppColors.primaryA20)),
               child: IntrinsicHeight(child: Row(mainAxisSize: MainAxisSize.min, children: [
-                GestureDetector(onTap: () async { final f = await _toggleFav('diagnoses', d); setState(() { final i = _diagnosisMasters.indexWhere((e) => e.id == d.id); if (i >= 0) _diagnosisMasters[i] = ExamMasterItem(id: d.id, value: d.value, isFavourite: f); }); }, child: Padding(padding: const EdgeInsets.only(left: 8, top: 6, bottom: 6, right: 4), child: Icon(d.isFavourite ? Icons.star_rounded : Icons.star_border_rounded, size: 13, color: d.isFavourite ? Colors.amber.shade600 : (sel ? Colors.white54 : AppColors.primaryA30)))),
+                PressScaleWrapper(onTap: () async { final f = await _toggleFav('diagnoses', d); setState(() { final i = _diagnosisMasters.indexWhere((e) => e.id == d.id); if (i >= 0) _diagnosisMasters[i] = ExamMasterItem(id: d.id, value: d.value, isFavourite: f); }); }, child: Padding(padding: const EdgeInsets.only(left: 8, top: 6, bottom: 6, right: 4), child: Icon(d.isFavourite ? Icons.star_rounded : Icons.star_border_rounded, size: 13, color: d.isFavourite ? Colors.amber.shade600 : (sel ? Colors.white54 : AppColors.primaryA30)))),
                 Container(width: 0.5, color: sel ? Colors.white24 : AppColors.primaryA10),
-                GestureDetector(onTap: () => setState(() { if (sel) _selectedDiagnosisIds.remove(d.id); else _selectedDiagnosisIds.add(d.id); }), child: Padding(padding: const EdgeInsets.only(left: 8, right: 10, top: 6, bottom: 6), child: Row(mainAxisSize: MainAxisSize.min, children: [if (sel) const Icon(Icons.check_rounded, size: 13, color: Colors.white), if (sel) const SizedBox(width: 3), Text(d.value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: sel ? Colors.white : AppColors.primary))]))),
+                PressScaleWrapper(onTap: () => setState(() { if (sel) _selectedDiagnosisIds.remove(d.id); else _selectedDiagnosisIds.add(d.id); }), child: Padding(padding: const EdgeInsets.only(left: 8, right: 10, top: 6, bottom: 6), child: Row(mainAxisSize: MainAxisSize.min, children: [if (sel) const Icon(Icons.check_rounded, size: 13, color: Colors.white), if (sel) const SizedBox(width: 3), Text(d.value, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w500, color: sel ? Colors.white : AppColors.primary))]))),
               ])),
             );
           }).toList()),
@@ -966,11 +967,11 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
             Icon(Icons.bolt_rounded, size: 13, color: Colors.amber.shade700),
             const SizedBox(width: 5),
             Expanded(child: Text('QUICK ADD', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w800, color: AppColors.primaryA55, letterSpacing: 0.5))),
-            GestureDetector(onTap: _showAdviceMore, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFFF0F4F8), borderRadius: BorderRadius.circular(6), border: Border.all(color: AppColors.primaryA15)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.grid_view_rounded, size: 11, color: AppColors.primaryA60), const SizedBox(width: 4), Text('More', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primaryA70))]))),
+            PressScaleWrapper(onTap: _showAdviceMore, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: const Color(0xFFF0F4F8), borderRadius: BorderRadius.circular(6), border: Border.all(color: AppColors.primaryA15)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.grid_view_rounded, size: 11, color: AppColors.primaryA60), const SizedBox(width: 4), Text('More', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primaryA70))]))),
           ]),
           const SizedBox(height: 8),
           if (favAdvices.isNotEmpty)
-            Wrap(spacing: 6, runSpacing: 6, children: favAdvices.map((a) => GestureDetector(onTap: () => _appendAdvice(a.value), child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: const Color(0xFFFFFBEB), border: Border.all(color: Colors.amber.shade300), borderRadius: BorderRadius.circular(AppRadius.xl)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star_rounded, size: 11, color: Colors.amber.shade600), const SizedBox(width: 4), Text(a.value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF92400E)))])))).toList())
+            Wrap(spacing: 6, runSpacing: 6, children: favAdvices.map((a) => PressScaleWrapper(onTap: () => _appendAdvice(a.value), child: Container(padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5), decoration: BoxDecoration(color: const Color(0xFFFFFBEB), border: Border.all(color: Colors.amber.shade300), borderRadius: BorderRadius.circular(AppRadius.xl)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(Icons.star_rounded, size: 11, color: Colors.amber.shade600), const SizedBox(width: 4), Text(a.value, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w500, color: Color(0xFF92400E)))])))).toList())
           else
             Text('No favourites yet — tap More → ★ to mark', style: TextStyle(fontSize: 11, color: AppColors.primaryA40, fontStyle: FontStyle.italic)),
         ]);
@@ -1023,7 +1024,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
                 child: Row(children: [
                   Expanded(child: TextField(onChanged: (v) => ss(() => query = v), decoration: InputDecoration(hintText: 'Search…', isDense: true, prefixIcon: const Icon(Icons.search_rounded, size: 16), contentPadding: const EdgeInsets.symmetric(vertical: 8, horizontal: 10), border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.sm))))),
                   const SizedBox(width: 8),
-                  GestureDetector(
+                  PressScaleWrapper(
                     onTap: () async {
                       final text = addCtrl.text.trim();
                       if (text.isEmpty) return;
@@ -1054,7 +1055,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
 
   // ── Small shared helpers ──────────────────────────────────────────────
 
-  Widget _addBtn(VoidCallback onTap) => GestureDetector(onTap: onTap, child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppColors.tealA12, borderRadius: BorderRadius.circular(AppRadius.xl)), child: Icon(Icons.add_rounded, color: AppColors.teal, size: 16)));
+  Widget _addBtn(VoidCallback onTap) => PressScaleWrapper(onTap: onTap, child: Container(padding: const EdgeInsets.all(4), decoration: BoxDecoration(color: AppColors.tealA12, borderRadius: BorderRadius.circular(AppRadius.xl)), child: Icon(Icons.add_rounded, color: AppColors.teal, size: 16)));
 
   Widget _emptyHint(String text) => Padding(padding: const EdgeInsets.only(bottom: 8), child: Text(text, style: TextStyle(fontSize: 12, color: AppColors.primaryA40, fontStyle: FontStyle.italic)));
 

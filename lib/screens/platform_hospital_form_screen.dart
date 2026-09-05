@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
+import '../models/platform_location_master_models.dart';
 import '../models/platform_tenant_models.dart';
+import '../services/platform_location_master_service.dart';
 import '../services/platform_tenant_service.dart';
 import '../utils/app_decorations.dart';
 import '../utils/phone_rules.dart';
@@ -40,6 +42,14 @@ class _PlatformHospitalFormScreenState extends State<PlatformHospitalFormScreen>
   bool _slugEdited = false;
   String _plan = 'monthly';
 
+  // Country drives currency/timezone resolution server-side
+  // (TenantService::createTenant()) — create mode only, matching web's
+  // public register flow. Not editable later here; a hospital's own
+  // Settings screen owns that once it exists. See
+  // LOCATION_CURRENCY_PARITY_PRD.md Phase 6.
+  List<MasterCountry> _countries = [];
+  String? _selectedCountry;
+
   bool get _isEdit => widget.tenant != null;
 
   @override
@@ -53,10 +63,18 @@ class _PlatformHospitalFormScreenState extends State<PlatformHospitalFormScreen>
       _adminPhone.text = t.adminPhone ?? '';
       _city.text = t.city ?? '';
       _state.text = t.state ?? '';
+    } else {
+      _loadCountries();
     }
     _nameCtrl.addListener(() {
       if (!_isEdit && !_slugEdited) _slugCtrl.text = _toSlug(_nameCtrl.text);
     });
+  }
+
+  Future<void> _loadCountries() async {
+    final data = await PlatformLocationMasterService.instance.getDropdownData();
+    if (!mounted || data == null) return;
+    setState(() => _countries = data.countries);
   }
 
   @override
@@ -96,6 +114,7 @@ class _PlatformHospitalFormScreenState extends State<PlatformHospitalFormScreen>
         'admin_email': _adminEmail.text.trim(),
         'admin_phone': _adminPhone.text.trim(),
         'password': _password.text,
+        if (_selectedCountry != null) 'country': _selectedCountry,
         'city': _city.text.trim(),
         'state': _state.text.trim(),
         'plan': _plan,
@@ -188,6 +207,16 @@ class _PlatformHospitalFormScreenState extends State<PlatformHospitalFormScreen>
           const SizedBox(height: 18),
           AppSectionHeader(title: 'Location (Optional)', icon: Icons.location_on_rounded),
           const SizedBox(height: 10),
+          if (!_isEdit) ...[
+            DropdownButtonFormField<String>(
+              initialValue: _selectedCountry,
+              decoration: AppDecorations.inputDecoration(labelText: 'Country'),
+              hint: const Text('Select country (sets currency)', style: TextStyle(fontSize: 13)),
+              items: _countries.map((c) => DropdownMenuItem(value: c.name, child: Text(c.name))).toList(),
+              onChanged: (v) => setState(() => _selectedCountry = v),
+            ),
+            const SizedBox(height: 10),
+          ],
           _row2(_field(_city, 'City'), _field(_state, 'State')),
           if (!_isEdit) ...[
             const SizedBox(height: 18),

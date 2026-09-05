@@ -26,6 +26,10 @@ import 'platform_hospitals_screen.dart';
 /// tablet dialog convention. Business logic (filters/pagination/invoice
 /// download/offline payment recording) ported unchanged from
 /// eye_care_app/lib/screens/platform_billing_screen.dart.
+// Hardcoded ₹ here is intentional, not a currency-parity gap — mirrors
+// web's own deliberate INR-only SaaS/plan billing design (see
+// LOCATION_CURRENCY_PARITY_PRD.md Phase 5). Only hospital-facing screens
+// (patient billing, OT, dashboards) use the per-tenant currency.
 class PlatformBillingScreen extends StatefulWidget {
   final PlatformAdmin admin;
 
@@ -60,7 +64,7 @@ class _PlatformBillingScreenState extends State<PlatformBillingScreen> {
 
   Widget _tabBtn(int index, String label, IconData icon) {
     final selected = _tab == index;
-    return GestureDetector(
+    return PressScaleWrapper(
       onTap: () => setState(() => _tab = index),
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
@@ -390,7 +394,7 @@ class _RecordPaymentDialogState extends State<_RecordPaymentDialog> {
                         TextField(controller: _searchCtrl, decoration: AppDecorations.inputDecoration(labelText: 'Search hospitals...', prefixIcon: const Icon(Icons.search_rounded, size: 18))),
                         const SizedBox(height: 8),
                         if (_tenantsLoading)
-                          const Center(child: Padding(padding: EdgeInsets.all(20), child: CircularProgressIndicator()))
+                          const AppSkeletonList(count: 3, itemHeight: 50, padding: EdgeInsets.zero)
                         else if (_filteredTenants.isEmpty)
                           const Padding(padding: EdgeInsets.all(12), child: Text('No hospitals found.', style: AppTextStyles.bodySmall))
                         else

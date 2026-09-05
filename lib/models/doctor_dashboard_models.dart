@@ -166,6 +166,9 @@ class DoctorDashboardData {
   final DoctorCardInfo? viewingDoctor;
   final List<PrimaryPatient> primaryQueue;
   final List<SecondaryPatient> secondaryQueue;
+  final int tenantTodayPatients;
+  final int tenantTodayPrimary;
+  final int tenantTodaySecondary;
 
   const DoctorDashboardData({
     required this.stats,
@@ -175,6 +178,9 @@ class DoctorDashboardData {
     this.viewingDoctor,
     required this.primaryQueue,
     required this.secondaryQueue,
+    this.tenantTodayPatients = 0,
+    this.tenantTodayPrimary = 0,
+    this.tenantTodaySecondary = 0,
   });
 
   factory DoctorDashboardData.fromJson(Map<String, dynamic> j) => DoctorDashboardData(
@@ -195,5 +201,8 @@ class DoctorDashboardData {
         secondaryQueue: (j['secondary_queue'] as List<dynamic>? ?? [])
             .map((e) => SecondaryPatient.fromJson(e as Map<String, dynamic>))
             .toList(),
+        tenantTodayPatients:  (j['tenant_today_patients']  as num?)?.toInt() ?? 0,
+        tenantTodayPrimary:   (j['tenant_today_primary']   as num?)?.toInt() ?? 0,
+        tenantTodaySecondary: (j['tenant_today_secondary'] as num?)?.toInt() ?? 0,
       );
 }

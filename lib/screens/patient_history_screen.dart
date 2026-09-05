@@ -8,7 +8,11 @@ import '../models/patient_history_models.dart';
 import '../services/patient_history_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_route.dart';
+import '../widgets/app_animations.dart';
+import '../widgets/skeleton.dart';
 import 'prescription_print_screen.dart';
+import 'primary_exam_screen.dart';
+import 'secondary_exam_screen.dart';
 
 /// Tablet Patient History — Pattern G. Embedded in the Patients detail pane
 /// (no own Scaffold/AppBar). Clinical data tables (refraction/O-E/fundus)
@@ -156,7 +160,7 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
     final cards = [
       _infoCard(icon: Icons.phone_rounded, title: 'Contact', rows: [('Mobile', p.contactNo ?? '—'), ('WhatsApp', p.whatsappNo ?? 'Same as mobile'), ('City', p.location?.city ?? '—')]),
       _infoCard(icon: Icons.calendar_today_rounded, title: 'Appointment', rows: [('Date', _fmtDate(p.appointmentDate)), ('Doctor', p.doctor?.name ?? '—'), ('Type', p.type == 'walkin' ? 'Walk-in' : 'Phone Appt')]),
-      _infoCard(icon: Icons.receipt_long_rounded, title: 'Case Details', rows: [('Case Type', p.caseType?.caseType ?? '—'), ('Case Fee', p.caseFee != null ? '₹${_fmtFee(p.caseFee!)}' : '—'), ('Referred By', p.referrer?.name ?? '—')]),
+      _infoCard(icon: Icons.receipt_long_rounded, title: 'Case Details', rows: [('Case Type', p.caseType?.caseType ?? '—'), ('Case Fee', p.caseFee != null ? '${widget.hospital.currencySymbol}${_fmtFee(p.caseFee!)}' : '—'), ('Referred By', p.referrer?.name ?? '—')]),
       _infoCard(icon: Icons.info_rounded, title: 'Registration', rows: [('MRD', p.patientCode), ('Occupation', p.occupation ?? '—'), ('Registered', p.createdAt != null ? _fmtDateTime(p.createdAt!) : '—')]),
     ];
     return LayoutBuilder(builder: (context, c) {
@@ -225,7 +229,7 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
 
   Widget _buildTimelineBody() {
     if (_loading) {
-      return Padding(padding: const EdgeInsets.symmetric(vertical: 32), child: Center(child: CircularProgressIndicator(color: AppColors.primary, strokeWidth: 2.5)));
+      return const AppSkeletonList(count: 4, itemHeight: 80);
     }
     if (_error != null) {
       return Padding(
@@ -334,7 +338,7 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
                   ]),
                 ),
               Row(children: [
-                GestureDetector(
+                PressScaleWrapper(
                   onTap: () => setState(() => isExpanded ? _expanded.remove(exam.id) : _expanded.add(exam.id)),
                   child: Container(
                     padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -350,7 +354,7 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
                 ),
                 if (exam.prescriptions.isNotEmpty && PermissionService.instance.can(Perm.opdPrescriptionPrint)) ...[
                   const SizedBox(width: 8),
-                  GestureDetector(
+                  PressScaleWrapper(
                     onTap: () => Navigator.of(context, rootNavigator: true).push(appRoute(PrescriptionPrintScreen(exam: exam, patient: _history!.patient, hospital: widget.hospital))),
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
@@ -359,6 +363,26 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
                         Icon(Icons.print_outlined, size: 14, color: AppColors.primary),
                         const SizedBox(width: 6),
                         Text('Print Rx', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
+                      ]),
+                    ),
+                  ),
+                ],
+                // Edit — reopens the same exam form pre-filled with the saved
+                // data, matching web parity. Gated by the same permission
+                // that already guards fresh entry.
+                if (PermissionService.instance.can(isPrimary ? Perm.opdExamPrimary : Perm.opdExamSecondary)) ...[
+                  const SizedBox(width: 8),
+                  PressScaleWrapper(
+                    onTap: () => Navigator.of(context, rootNavigator: true).push(appRoute(isPrimary
+                        ? PrimaryExamScreen(user: widget.user, hospital: widget.hospital, patient: widget.patient)
+                        : SecondaryExamScreen(user: widget.user, hospital: widget.hospital, patient: widget.patient))),
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+                      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.sm), border: Border.all(color: AppColors.primaryA18)),
+                      child: Row(mainAxisSize: MainAxisSize.min, children: [
+                        Icon(Icons.edit_outlined, size: 14, color: AppColors.primary),
+                        const SizedBox(width: 6),
+                        Text('Edit', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
                       ]),
                     ),
                   ),
@@ -700,7 +724,7 @@ class _PatientHistoryScreenState extends State<PatientHistoryScreen> {
                     Text('Dr. ${exam.doctorName}', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
                   ]),
                 ),
-              GestureDetector(
+              PressScaleWrapper(
                 onTap: () => setState(() => isExpanded ? _partnerExpanded.remove(expandKey) : _partnerExpanded.add(expandKey)),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
