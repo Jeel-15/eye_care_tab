@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/app_text_styles.dart';
@@ -6,6 +7,7 @@ import '../models/platform_admin_models.dart';
 import '../models/platform_notification_models.dart';
 import '../services/platform_notification_service.dart';
 import '../utils/app_decorations.dart';
+import '../utils/app_dialogs.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/app_empty_state.dart';
 import '../widgets/app_error_state.dart';
@@ -139,20 +141,15 @@ class _ComposeViewState extends State<_ComposeView> {
       return;
     }
 
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-        title: Text('Send Notification', style: AppTextStyles.headingSmall),
-        content: Text('This will email $_sendCount hospital admin(s) immediately.\n\nSubject: "${_subjectCtrl.text}"', style: AppTextStyles.bodyMedium),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(context, true), child: Text('Send', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800))),
-        ],
-      ),
+    final confirmed = await showAppConfirmDialog(
+      context,
+      title: 'Send Notification',
+      message: 'This will email $_sendCount hospital admin(s) immediately.\n\nSubject: "${_subjectCtrl.text}"',
+      confirmLabel: 'Send',
+      icon: Icons.send_rounded,
     );
 
-    if (confirmed != true || !mounted) return;
+    if (!confirmed || !mounted) return;
     setState(() => _loading = true);
 
     final result = await PlatformNotificationService.instance.send(subject: _subjectCtrl.text.trim(), message: _messageCtrl.text.trim(), recipient: _recipient, tenantIds: _recipient == 'specific' ? _selectedIds.toList() : null);
@@ -272,7 +269,7 @@ class _HistoryView extends StatelessWidget {
     if (history.isEmpty) {
       return AppEmptyState(message: 'No notifications sent yet.', icon: Icons.campaign_outlined, onRefresh: onRefresh);
     }
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       color: AppColors.primary,
       onRefresh: () async => onRefresh(),
       child: LayoutBuilder(builder: (context, c) {

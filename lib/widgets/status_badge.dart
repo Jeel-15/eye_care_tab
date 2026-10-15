@@ -51,15 +51,27 @@ class StatusBadge extends StatelessWidget {
     return StatusBadge(label: status, color: color);
   }
 
-  factory StatusBadge.otAppointmentStatus(String status) {
-    final color = switch (status.toLowerCase()) {
-      'confirmed' => AppColors.green,
-      'booked'    => AppColors.blue,
-      'completed' => AppColors.teal,
-      'cancelled' => AppColors.red,
-      _           => AppColors.textDisabled,
+  /// Web's real per-row stage (`OtAppointment::stage_label`/`stage_badge_class`
+  /// — index.blade.php's `.ot-stage-*` CSS, colors matched exactly here) —
+  /// not the raw 4-value `status`, which collapses 10 distinct real-world
+  /// stages (Surgery Recommended, In Ward, Ready for OT, Discharged, ...)
+  /// down to just "completed".
+  factory StatusBadge.otAppointmentStage(String badgeClass, String label) {
+    final color = switch (badgeClass) {
+      'ot-stage-booked'      => const Color(0xFF92660A),
+      'ot-stage-confirmed'   => const Color(0xFF1E8E5A),
+      'ot-stage-discharged'  => const Color(0xFF1E8E5A),
+      'ot-stage-cancelled'   => const Color(0xFFC0392B),
+      'ot-stage-checkedin'   => const Color(0xFF5D6D7E),
+      'ot-stage-recommended' => const Color(0xFF8E44AD),
+      'ot-stage-counselled'  => const Color(0xFF2E86C1),
+      'ot-stage-billing'     => const Color(0xFFB9750B),
+      'ot-stage-ward'        => const Color(0xFF117864),
+      'ot-stage-ready'       => const Color(0xFF148F77),
+      'ot-stage-operated'    => const Color(0xFF1A5276),
+      _                      => AppColors.textDisabled,
     };
-    return StatusBadge(label: status, color: color);
+    return StatusBadge(label: label, color: color);
   }
 
   @override

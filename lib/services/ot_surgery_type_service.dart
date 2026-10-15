@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import '../utils/json_parse.dart';
 import 'base_service.dart';
 
 class OtTypeOption {
@@ -10,7 +11,7 @@ class OtTypeOption {
   const OtTypeOption({required this.id, required this.name});
 
   factory OtTypeOption.fromJson(Map<String, dynamic> j) => OtTypeOption(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '',
       );
 }
@@ -30,8 +31,8 @@ class OtSurgeryTypeItem {
 
   factory OtSurgeryTypeItem.fromJson(Map<String, dynamic> j) =>
       OtSurgeryTypeItem(
-        id: j['id'] as int,
-        otTypeId: j['ot_type_id'] as int,
+        id: jsonInt(j['id']),
+        otTypeId: jsonInt(j['ot_type_id']),
         otTypeName: j['ot_type_name'] as String? ?? '',
         surgeryName: j['surgery_name'] as String? ?? '',
       );

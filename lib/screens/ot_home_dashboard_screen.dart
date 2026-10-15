@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
 import '../models/ot_booking_models.dart';
 import '../services/ot_booking_service.dart';
 import '../services/permission_service.dart';
+import '../utils/refreshable.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/skeleton.dart';
 
@@ -25,7 +27,7 @@ class OtHomeDashboardScreen extends StatefulWidget {
   State<OtHomeDashboardScreen> createState() => _OtHomeDashboardScreenState();
 }
 
-class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> {
+class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> implements Refreshable {
   bool _loading = true;
   String? _error;
   OtReceptionistDashboardStats? _stats;
@@ -35,6 +37,9 @@ class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> {
     super.initState();
     _load();
   }
+
+  @override
+  Future<void> refreshSilently() => _load();
 
   Future<void> _load() async {
     setState(() { _loading = true; _error = null; });
@@ -54,6 +59,7 @@ class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> {
         Icon(Icons.local_hospital_rounded, color: AppColors.primary, size: 22),
         const SizedBox(width: 10),
         const Expanded(child: Text('OT Dashboard', style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+        IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary), tooltip: 'Refresh', onPressed: _load),
         if (p.can(Perm.otAppointmentCreate))
           OutlinedButton.icon(
             onPressed: () => widget.onNavigate?.call('ot_appointments'),
@@ -68,7 +74,7 @@ class _OtHomeDashboardScreenState extends State<OtHomeDashboardScreen> {
             ? const AppSkeletonList(count: 2, itemHeight: 120)
             : _error != null
                 ? AppErrorState(message: _error!, onRetry: _load)
-                : _buildBody(p),
+                : AppRefreshIndicator(onRefresh: _load, child: _buildBody(p)),
       ),
     ]);
   }

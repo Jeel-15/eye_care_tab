@@ -5,6 +5,7 @@ import '../models/auth_models.dart';
 import '../models/patient_history_models.dart';
 import '../services/auth_service.dart';
 import '../services/prescription_service.dart';
+import '../services/settings_service.dart';
 
 /// Tablet prescription print preview — full-screen route (pushed from Patient
 /// History's "Print Rx" action), pdf generation ported unchanged from
@@ -30,14 +31,26 @@ class PrescriptionPrintScreen extends StatelessWidget {
         ]),
       ),
       body: PdfPreview(
-        build: (_) => PrescriptionService.instance.generatePdf(
-          hospitalName: hospital.name,
-          exam: exam,
-          patient: patient,
-          // Live session cache, not `hospital` — that's frozen at
-          // login/launch and won't reflect a logo uploaded mid-session.
-          hospitalLogoUrl: AuthService.instance.cachedHospital?.logoUrl ?? hospital.logoUrl,
-        ),
+        build: (_) async {
+          // Web's Settings → Print "Letter Pad" toggle — see
+          // PrescriptionService.generatePdf()'s doc comment. Best-effort:
+          // a failed fetch just falls back to the existing branded header
+          // (letterPadAvailable: false), same as before this was wired up.
+          bool letterPadAvailable = false;
+          try {
+            final settings = await SettingsService.instance.fetchSettings();
+            letterPadAvailable = settings.letterPadAvailable;
+          } catch (_) {}
+          return PrescriptionService.instance.generatePdf(
+            hospitalName: hospital.name,
+            exam: exam,
+            patient: patient,
+            // Live session cache, not `hospital` — that's frozen at
+            // login/launch and won't reflect a logo uploaded mid-session.
+            hospitalLogoUrl: AuthService.instance.cachedHospital?.logoUrl ?? hospital.logoUrl,
+            letterPadAvailable: letterPadAvailable,
+          );
+        },
         allowPrinting: true,
         allowSharing: true,
         canChangePageFormat: false,

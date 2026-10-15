@@ -1,5 +1,7 @@
 // ── Generic master item (dosages, types, categories, routes, diagnoses) ──────
 
+import '../utils/json_parse.dart';
+
 class MedMasterItem {
   final int id;
   final String name;
@@ -7,7 +9,7 @@ class MedMasterItem {
   const MedMasterItem({required this.id, required this.name});
 
   factory MedMasterItem.fromJson(Map<String, dynamic> j, {String field = 'name'}) =>
-      MedMasterItem(id: j['id'] as int, name: (j[field] ?? j['name'] ?? '-') as String);
+      MedMasterItem(id: jsonInt(j['id']), name: (j[field] ?? j['name'] ?? '-') as String);
 
   @override
   bool operator ==(Object other) => other is MedMasterItem && other.id == id;
@@ -32,10 +34,10 @@ class MedMeta {
   });
 
   factory MedMeta.fromJson(Map<String, dynamic> j) => MedMeta(
-        currentPage: j['current_page'] as int? ?? 1,
-        lastPage: j['last_page'] as int? ?? 1,
-        total: j['total'] as int? ?? 0,
-        perPage: j['per_page'] as int? ?? 25,
+        currentPage: jsonInt(j['current_page'], fallback: 1),
+        lastPage: jsonInt(j['last_page'], fallback: 1),
+        total: jsonInt(j['total'], fallback: 0),
+        perPage: jsonInt(j['per_page'], fallback: 25),
       );
 
   bool get hasPrev => currentPage > 1;
@@ -47,6 +49,10 @@ class MedMeta {
 class MedItem {
   final int id;
   final String name;
+  // Web's exam-page medicine picker matches on brand name too (that's what's
+  // printed on the box, and what's often searched by) — see
+  // secondary.blade.php's client-side filter over `$medicinesForJs`.
+  final String? brandName;
   // opd | ot — new field, web pull 2026-08-07. Distinct from
   // MedicineGroup.usageScope (which has a 3rd 'both' value) — this one is
   // per-Medicine and only ever opd/ot. See
@@ -65,6 +71,7 @@ class MedItem {
   const MedItem({
     required this.id,
     required this.name,
+    this.brandName,
     this.usageScope = 'opd',
     this.medicineTypeId,
     this.medicineTypeName,
@@ -78,18 +85,19 @@ class MedItem {
   });
 
   factory MedItem.fromJson(Map<String, dynamic> j) => MedItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '-',
+        brandName: j['brand_name'] as String?,
         usageScope: j['usage_scope'] as String? ?? 'opd',
-        medicineTypeId: j['medicine_type_id'] as int?,
+        medicineTypeId: jsonIntOrNull(j['medicine_type_id']),
         medicineTypeName: (j['medicine_type'] as Map<String, dynamic>?)?['name'] as String?,
-        dosageId: j['dosage_id'] as int?,
+        dosageId: jsonIntOrNull(j['dosage_id']),
         dosageText: (j['dosage'] as Map<String, dynamic>?)?['dosage'] as String?,
         duration: j['duration'] as String?,
         qty: j['qty'] as String?,
         company: j['company'] as String?,
         composition: j['composition'] as String?,
-        price: (j['price'] as num?)?.toDouble(),
+        price: jsonDoubleOrNull(j['price']),
       );
 }
 
@@ -123,6 +131,8 @@ class MedListResult {
   }
 }
 
+// ── Medicine Group ────────────────────────────────────────────────────────────
+
 /// Result of a CSV/Excel bulk medicine import — mirrors web's plain-language
 /// summary + per-row error list (see CSV_MEDICINE_IMPORT_PARITY_PLAN.md).
 class MedicineImportResult {
@@ -137,13 +147,11 @@ class MedicineImportResult {
   });
 
   factory MedicineImportResult.fromJson(Map<String, dynamic> j) => MedicineImportResult(
-        imported: (j['imported'] as num?)?.toInt() ?? 0,
-        skipped: (j['skipped'] as num?)?.toInt() ?? 0,
+        imported: jsonInt(j['imported']),
+        skipped: jsonInt(j['skipped']),
         errors: (j['errors'] as List?)?.map((e) => e.toString()).toList() ?? const [],
       );
 }
-
-// ── Medicine Group ────────────────────────────────────────────────────────────
 
 class MedGroupItem {
   final int? medicineId;
@@ -169,15 +177,15 @@ class MedGroupItem {
   });
 
   factory MedGroupItem.fromJson(Map<String, dynamic> j) => MedGroupItem(
-        medicineId: j['medicine_id'] as int?,
+        medicineId: jsonIntOrNull(j['medicine_id']),
         medicineName: (j['medicine'] as Map<String, dynamic>?)?['name'] as String?,
-        dosageId: j['dosage_id'] as int?,
+        dosageId: jsonIntOrNull(j['dosage_id']),
         dosageText: (j['dosage'] as Map<String, dynamic>?)?['dosage'] as String?,
-        routeId: j['route_id'] as int?,
+        routeId: jsonIntOrNull(j['route_id']),
         routeName: (j['route'] as Map<String, dynamic>?)?['name'] as String?,
         frequency: j['frequency'] as String?,
         duration: j['duration'] as String?,
-        quantity: (j['quantity'] as num?)?.toInt() ?? 1,
+        quantity: jsonInt(j['quantity'], fallback: 1),
       );
 
   /// OT ward-medicine quick-fill dose text — mirrors web's
@@ -193,6 +201,7 @@ class MedGroup {
   final String? groupCode;
   final int? diagnosisId;
   final String? diagnosisValue;
+  final String? usageScope;
   final int itemsCount;
   final List<MedGroupItem> items;
 
@@ -202,17 +211,19 @@ class MedGroup {
     this.groupCode,
     this.diagnosisId,
     this.diagnosisValue,
+    this.usageScope,
     required this.itemsCount,
     required this.items,
   });
 
   factory MedGroup.fromJson(Map<String, dynamic> j) => MedGroup(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '-',
         groupCode: j['group_code'] as String?,
-        diagnosisId: j['diagnosis_id'] as int?,
+        diagnosisId: jsonIntOrNull(j['diagnosis_id']),
         diagnosisValue: (j['diagnosis'] as Map<String, dynamic>?)?['value'] as String?,
-        itemsCount: j['items_count'] as int? ?? 0,
+        usageScope: j['usage_scope'] as String?,
+        itemsCount: jsonInt(j['items_count']),
         items: (j['items'] as List? ?? [])
             .map((e) => MedGroupItem.fromJson(e as Map<String, dynamic>))
             .toList(),
@@ -258,10 +269,10 @@ class MedGroupFormData {
     final medicines = <MedMasterItem>[];
     for (final e in rawMeds) {
       final m = e as Map<String, dynamic>;
-      final id = m['id'] as int;
+      final id = jsonInt(m['id']);
       medicines.add(MedMasterItem(id: id, name: m['name'] as String? ?? '-'));
       autoFillMap[id] = MedAutoFill(
-        dosageId: m['dosage_id'] as int?,
+        dosageId: jsonIntOrNull(m['dosage_id']),
         duration: m['duration'] as String?,
         qty: m['qty'] as String?,
       );

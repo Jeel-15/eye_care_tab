@@ -1,5 +1,6 @@
 import 'package:fl_chart/fl_chart.dart';
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import 'package:google_fonts/google_fonts.dart';
 import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
@@ -65,7 +66,7 @@ class _PlatformDashboardScreenState extends State<PlatformDashboardScreen> {
   Widget build(BuildContext context) {
     if (_loading) return const AppSkeletonList(count: 4, itemHeight: 100);
     if (_error != null) return _buildError();
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       color: AppColors.primary,
       onRefresh: _load,
       child: SingleChildScrollView(

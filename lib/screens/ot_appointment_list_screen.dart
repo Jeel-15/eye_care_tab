@@ -1,21 +1,45 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import '../constants/app_colors.dart';
+import '../widgets/add_city_dialog.dart';
 import '../constants/app_radius.dart';
+import '../constants/permissions.dart';
 import '../utils/date_format.dart';
 import '../models/ot_appointment_models.dart';
-import '../models/ot_booking_models.dart';
-import '../services/masters_service.dart';
 import '../services/ot_appointment_service.dart';
 import '../services/ot_slot_service.dart';
+import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
-import '../widgets/app_empty_state.dart';
-import '../widgets/app_error_state.dart';
-import '../widgets/app_pagination_bar.dart';
-import '../widgets/app_search_bar.dart';
+import '../widgets/table_row_action.dart';
+import '../widgets/app_dialog.dart';
+import '../widgets/form_kit.dart';
+import '../widgets/ot_panel_header.dart';
+import '../widgets/scaled_data_table.dart';
+import '../widgets/segmented_pill_toggle.dart';
 import '../widgets/skeleton.dart';
-import '../widgets/split_pane_scaffold.dart';
 import '../widgets/status_badge.dart';
+import '../widgets/table_pagination_footer.dart';
+import '../widgets/table_tools_bar.dart';
+import '../utils/app_date_picker.dart';
+
+/// Opens the same edit dialog the dedicated screen's row Edit action uses —
+/// exposed so [OtAppointmentDeskHomePanel]'s own compact preview rows can
+/// reuse it without duplicating the dialog-building code.
+Future<void> openOtAppointmentEditDialog(BuildContext context, OtAppointmentItem item, {required VoidCallback onSaved}) {
+  return showPaneDialog<void>(
+    context,
+    barrierDismissible: false,
+    builder: (dCtx) => OtAppointmentFormPane(
+      key: ValueKey('ot_appt_form_edit_${item.id}'),
+      item: item,
+      onSaved: () {
+        Navigator.pop(dCtx);
+        onSaved();
+      },
+      onCancel: () => Navigator.pop(dCtx),
+    ),
+  );
+}
 
 // Matches web's `optional($appointment->appointment_date)->format('d M Y')`
 // exactly — web's index table has no time column at all, only this date.
@@ -25,34 +49,58 @@ String _fmtAppointmentDate(String raw) {
   return toDisplayDate(d);
 }
 
-/// Tablet OT Appointments — Round 3 Phase 2. Pattern A (list + detail split),
-/// matching `PatientsScreen`/`PatientFormScreen` exactly — the floating
-/// `AlertDialog` this screen used to open for New/Edit Appointment was
-/// cramped and inconsistent with how every other "add an entity" flow in
-/// this app works. See OT_WEB_PARITY_FIX_PRD.md §1.6.
+// Matches web's index Type badge: "OT" or Title-Case of phone/walk_in/online.
+String _typeLabel(String type) => switch (type) {
+  'phone' => 'Phone',
+  'walk_in' => 'Walk-in',
+  'online' => 'Online',
+  'ot' => 'OT',
+  _ => type,
+};
+
+/// Tablet OT Appointments — web-parity table redesign (2026-09-18), matching
+/// `resources/views/hospital/ot/appointments/index.blade.php`'s real
+/// DataTables-powered "Appointment Register" panel exactly: one single-page
+/// table (APPT # / Patient / Mobile / Type / Date / Doctor / Status /
+/// Action) with a status filter, client-side search + Show-entries +
+/// "Showing X to Y of Z entries" pagination — no list+detail split, same as
+/// the just-completed Patients screen redesign. Add/Edit now open the same
+/// `OtAppointmentFormPane` in a modal dialog (the established
+/// `dashboard_screen.dart` `_openWalkInFromOt` pattern already reused for
+/// Patients) instead of a side detail-pane. All business logic (load/
+/// confirm/cancel/save, slot-conflict lookups) is unchanged from before —
+/// only the presentation moved from split-pane list tiles to table rows.
 class OtAppointmentListScreen extends StatefulWidget {
   const OtAppointmentListScreen({super.key});
 
   @override
-  State<OtAppointmentListScreen> createState() => _OtAppointmentListScreenState();
+  State<OtAppointmentListScreen> createState() =>
+      _OtAppointmentListScreenState();
 }
 
-enum _PaneMode { list, add, edit }
-
 class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
-  static const _statuses = ['all', 'booked', 'confirmed', 'cancelled', 'completed'];
-
-  final _searchCtrl = TextEditingController();
   List<OtAppointmentItem> _items = [];
-  OtPaginationMeta? _meta;
   bool _loading = true;
   String? _error;
-  String _status = 'all';
-  DateTime? _dateFilter;
-  int _page = 1;
+  // Web pull 2026-10-07 — the 16-stage status filter was fully replaced by a
+  // simple Booked/Completed tab system (new `ot_appointment` role's own
+  // desk/dashboard). `meta.booked_count`/`meta.completed_count` are the
+  // live per-tab totals, matching the tab pill badges.
+  String _tab = 'booked';
+  int _bookedCount = 0;
+  int _completedCount = 0;
+  // Web pull 2026-10-06 — index() defaults to today, widened via a
+  // date-range picker. Defaulted client-side too, so the chip reads "Today"
+  // rather than an empty placeholder on first open.
+  DateTime _from = DateTime.now();
+  DateTime _to = DateTime.now();
 
-  _PaneMode _paneMode = _PaneMode.list;
-  OtAppointmentItem? _editingItem;
+  final TextEditingController _searchCtrl = TextEditingController();
+  String _search = '';
+  int _perPage = 10;
+  int _currentPage = 1;
+
+  bool get _canEdit => PermissionService.instance.can(Perm.otAppointmentEdit);
 
   @override
   void initState() {
@@ -66,275 +114,487 @@ class _OtAppointmentListScreenState extends State<OtAppointmentListScreen> {
     super.dispose();
   }
 
-  String? get _dateStr => _dateFilter == null ? null : toIsoDate(_dateFilter!);
-
   Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+      _currentPage = 1;
+    });
     try {
-      final result = await OtAppointmentService.instance.list(status: _status, date: _dateStr, search: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim(), page: _page);
-      if (mounted) setState(() { _items = result.items; _meta = result.meta; _loading = false; });
+      // perPage generous enough to cover a full result set in one page,
+      // matching web's own "client-side DataTable" index — search/
+      // Show-entries/pagination below all operate on this full list, same
+      // as web's real DataTables instance.
+      final result = await OtAppointmentService.instance.list(
+        tab: _tab,
+        fromDate: toIsoDate(_from),
+        toDate: toIsoDate(_to),
+        perPage: 200,
+      );
+      if (mounted)
+        setState(() {
+          _items = result.items;
+          _bookedCount = result.bookedCount;
+          _completedCount = result.completedCount;
+          _loading = false;
+        });
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString().replaceFirst('Exception: ', ''); _loading = false; });
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
     }
   }
 
-  Future<void> _pickDateFilter() async {
-    final picked = await showDatePicker(context: context, initialDate: _dateFilter ?? DateTime.now(), firstDate: DateTime.now().subtract(const Duration(days: 365)), lastDate: DateTime.now().add(const Duration(days: 365)));
-    if (picked != null) { setState(() { _dateFilter = picked; _page = 1; }); _load(); }
-  }
-
-  Future<void> _confirm(OtAppointmentItem item) async {
-    try {
-      await OtAppointmentService.instance.confirm(item.id);
-      if (mounted) showAppSnackBar(context, 'Appointment confirmed', isSuccess: true);
-      _load();
-    } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
-    }
-  }
-
-  Future<void> _cancel(OtAppointmentItem item) async {
-    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Cancel appointment?'), content: Text('Cancel ${item.fullName}\'s appointment (${item.appointmentNumber})?'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('No')), TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Cancel Appointment', style: TextStyle(color: AppColors.red)))]));
-    if (ok != true) return;
-    try {
-      await OtAppointmentService.instance.cancel(item.id);
-      if (mounted) showAppSnackBar(context, 'Appointment cancelled', isSuccess: true);
-      _load();
-    } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
-    }
-  }
-
-  void _openAdd() => setState(() { _paneMode = _PaneMode.add; _editingItem = null; });
-
-  void _openEdit(OtAppointmentItem item) => setState(() { _paneMode = _PaneMode.edit; _editingItem = item; });
-
-  void _onFormSaved() {
-    setState(() => _paneMode = _PaneMode.list);
+  void _selectTab(String tab) {
+    if (tab == _tab) return;
+    setState(() => _tab = tab);
     _load();
   }
 
-  void _cancelForm() => setState(() => _paneMode = _PaneMode.list);
+  // ── Client-side search + pagination (mirrors web's real DataTables
+  // instance, which loads the full result set once and does everything
+  // below — search, Show-entries, pagination — purely in the browser) ──────
+
+  List<OtAppointmentItem> get _searchedItems {
+    final q = _search.trim().toLowerCase();
+    if (q.isEmpty) return _items;
+    return _items
+        .where(
+          (it) =>
+              it.fullName.toLowerCase().contains(q) ||
+              it.mobileNo.toLowerCase().contains(q) ||
+              it.appointmentNumber.toLowerCase().contains(q) ||
+              (it.doctor?.name.toLowerCase().contains(q) ?? false),
+        )
+        .toList();
+  }
+
+  int get _lastPage {
+    final total = _searchedItems.length;
+    if (_perPage <= 0 || total == 0) return 1;
+    return (total / _perPage).ceil().clamp(1, 999999);
+  }
+
+  List<OtAppointmentItem> get _pageItems {
+    final all = _searchedItems;
+    if (_perPage <= 0) return all;
+    final start = (_currentPage - 1) * _perPage;
+    if (start >= all.length) return const [];
+    return all.sublist(start, (start + _perPage).clamp(0, all.length));
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return SplitPaneScaffold(
-      showDetail: _paneMode != _PaneMode.list,
-      onBack: _cancelForm,
-      listPane: _buildListPane(),
-      detailPane: _buildDetailPane(),
-      listPaneWidth: 420,
-    );
-  }
-
-  // ── List pane ────────────────────────────────────────────────────────
-
-  Widget _buildListPane() {
     return Container(
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-          child: Row(children: [
-            Icon(Icons.event_note_rounded, color: AppColors.primary, size: 20),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('OT Appointments', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
-            IconButton(onPressed: _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
-            IconButton(onPressed: _openAdd, icon: Icon(Icons.add_circle_rounded, color: AppColors.primary, size: 26), tooltip: 'New Appointment'),
-          ]),
-        ),
-        Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _buildFilters()),
-        const SizedBox(height: 8),
-        Expanded(child: _buildBody()),
-        if (_meta != null) Padding(padding: const EdgeInsets.symmetric(vertical: 8), child: AppPaginationBar(currentPage: _meta!.currentPage, totalPages: _meta!.lastPage, onPageChange: (p) { setState(() => _page = p); _load(); })),
-      ]),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadius.lg),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.06),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          _buildHeader(),
+          _buildToolsBar(),
+          Expanded(child: _buildTableArea()),
+          _buildPaginationBar(),
+        ],
+      ),
     );
   }
 
-  Widget _buildFilters() {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      AppSearchBar(controller: _searchCtrl, hint: 'Search by name, mobile, or APT number...', onChanged: (_) { setState(() => _page = 1); _load(); }, onClear: _load),
-      const SizedBox(height: 8),
-      SizedBox(
-        height: 32,
-        child: ListView(scrollDirection: Axis.horizontal, children: [
-          for (final s in _statuses) ...[
-            ChoiceChip(
-              label: Text(s == 'all' ? 'All' : s[0].toUpperCase() + s.substring(1)),
-              selected: _status == s,
-              onSelected: (_) { setState(() { _status = s; _page = 1; }); _load(); },
-              selectedColor: AppColors.primaryA15,
-              labelStyle: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w600, color: _status == s ? AppColors.primary : AppColors.textSecondary),
-            ),
+  // Matches web's dark-navy "Appointment Register" panel header exactly
+  // (same chrome `OtPanelHeader` also gives the OT Counsellor Dashboard's
+  // two panels) — was previously a plain white header, under-matching the
+  // real web screenshot.
+  Widget _buildHeader() {
+    return OtPanelHeader(
+      icon: Icons.event_note_rounded,
+      title: 'Appointment Register',
+      subtitle:
+          'Pre-registration appointments booked over phone/walk-in/online/referral.',
+      actions: [
+        _tabToggle(),
+        const SizedBox(width: 6),
+        _dateRangeChip(),
+        const SizedBox(width: 6),
+        IconButton(
+          onPressed: _load,
+          icon: const Icon(
+            Icons.refresh_rounded,
+            color: Colors.white,
+            size: 20,
+          ),
+          tooltip: 'Refresh',
+        ),
+      ],
+    );
+  }
+
+  // Web pull 2026-10-07 — the 16-stage status filter dropdown was replaced
+  // by this simple Booked/Completed tab toggle (mirrors the new
+  // `ot_appointment` role's dashboard desk panel's own tabs).
+  Widget _tabToggle() {
+    return SegmentedPillToggle<String>(
+      options: [
+        (value: 'booked', label: 'Booked ($_bookedCount)'),
+        (value: 'completed', label: 'Completed ($_completedCount)'),
+      ],
+      selected: _tab,
+      onChanged: _selectTab,
+      trackColor: Colors.white.withValues(alpha: 0.15),
+      activeColor: Colors.white,
+      activeTextColor: AppColors.darkNavy,
+      inactiveTextColor: Colors.white,
+    );
+  }
+
+  Widget _dateRangeChip() {
+    final sameDay =
+        _from.year == _to.year && _from.month == _to.month && _from.day == _to.day;
+    final today = DateTime.now();
+    final isToday = sameDay && _from.year == today.year && _from.month == today.month && _from.day == today.day;
+    final label = isToday
+        ? 'Today'
+        : sameDay
+            ? toDisplayDate(_from)
+            : '${toDisplayDate(_from)} – ${toDisplayDate(_to)}';
+    return InkWell(
+      onTap: _pickRange,
+      borderRadius: BorderRadius.circular(AppRadius.full),
+      child: Container(
+        height: 34,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: Colors.white.withValues(alpha: 0.15),
+          borderRadius: BorderRadius.circular(AppRadius.full),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.date_range_rounded, size: 15, color: Colors.white),
             const SizedBox(width: 6),
-          ],
-          ActionChip(
-            avatar: Icon(Icons.event_rounded, size: 15, color: _dateFilter != null ? AppColors.primary : AppColors.textSecondary),
-            label: Text(_dateFilter == null ? 'Any date' : _dateStr!, style: const TextStyle(fontSize: 11.5)),
-            onPressed: _pickDateFilter,
-          ),
-          if (_dateFilter != null)
-            IconButton(icon: const Icon(Icons.close_rounded, size: 15), onPressed: () { setState(() { _dateFilter = null; _page = 1; }); _load(); }),
-        ]),
-      ),
-    ]);
-  }
-
-  Widget _buildBody() {
-    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 90);
-    if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
-    if (_items.isEmpty) return AppEmptyState(message: 'No appointments found.', icon: Icons.event_note_rounded, onRefresh: _load);
-
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(10, 0, 10, 8),
-      itemCount: _items.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, i) {
-        final item = _items[i];
-        return AnimatedListItem(
-          index: i,
-          child: _AppointmentListTile(
-            item: item,
-            selected: _paneMode == _PaneMode.edit && _editingItem?.id == item.id,
-            onTap: () => _openEdit(item),
-            onConfirm: item.status == 'booked' ? () => _confirm(item) : null,
-            onCancel: (item.status == 'booked' || item.status == 'confirmed') ? () => _cancel(item) : null,
-          ),
-        );
-      },
-    );
-  }
-
-  // ── Detail pane ─────────────────────────────────────────────────────────
-
-  Widget _buildDetailPane() {
-    if (_paneMode == _PaneMode.add) {
-      return _panelBox(child: _AppointmentFormPane(item: null, onSaved: _onFormSaved, onCancel: _cancelForm));
-    }
-    if (_paneMode == _PaneMode.edit && _editingItem != null) {
-      return _panelBox(child: _AppointmentFormPane(item: _editingItem, onSaved: _onFormSaved, onCancel: _cancelForm));
-    }
-    return _panelBox(
-      child: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.event_note_rounded, size: 56, color: AppColors.primaryA22),
-          const SizedBox(height: 12),
-          Text('Select "New Appointment" to book one,', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
-          Text('or tap an appointment to edit it.', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
-        ]),
-      ),
-    );
-  }
-
-  Widget _panelBox({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: child,
-    );
-  }
-}
-
-// ── List tile ──────────────────────────────────────────────────────────
-
-class _AppointmentListTile extends StatelessWidget {
-  final OtAppointmentItem item;
-  final bool selected;
-  final VoidCallback onTap;
-  final VoidCallback? onConfirm;
-  final VoidCallback? onCancel;
-
-  const _AppointmentListTile({required this.item, required this.selected, required this.onTap, this.onConfirm, this.onCancel});
-
-  @override
-  Widget build(BuildContext context) {
-    return Material(
-      color: selected ? AppColors.primaryA08 : Colors.white,
-      borderRadius: BorderRadius.circular(AppRadius.md),
-      child: InkWell(
-        onTap: onTap,
-        borderRadius: BorderRadius.circular(AppRadius.md),
-        child: Container(
-          padding: const EdgeInsets.all(14),
-          decoration: BoxDecoration(borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: selected ? AppColors.primary.withValues(alpha: 0.4) : AppColors.primaryA08)),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Row(children: [
-              Expanded(
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(item.fullName, style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700, color: AppColors.darkNavy)),
-                  const SizedBox(height: 2),
-                  Text('${item.appointmentNumber} · ${item.mobileNo}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-                ]),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: Colors.white,
               ),
-              StatusBadge.otAppointmentStatus(item.status),
-            ]),
-            const SizedBox(height: 8),
-            Row(children: [
-              Icon(Icons.event_rounded, size: 12, color: AppColors.primary.withValues(alpha: 0.5)),
-              const SizedBox(width: 4),
-              Text(_fmtAppointmentDate(item.appointmentDate), style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-              if (item.doctor != null) ...[
-                const SizedBox(width: 10),
-                Icon(Icons.medical_services_outlined, size: 12, color: AppColors.primary.withValues(alpha: 0.5)),
-                const SizedBox(width: 4),
-                Expanded(child: Text(item.doctor!.name, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary), overflow: TextOverflow.ellipsis)),
-              ],
-            ]),
-            if (onConfirm != null || onCancel != null) ...[
-              const SizedBox(height: 10),
-              Divider(height: 1, color: AppColors.primaryA08),
-              const SizedBox(height: 8),
-              Row(children: [
-                if (onConfirm != null) ...[
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: onConfirm,
-                      icon: const Icon(Icons.check_circle_outline_rounded, size: 15, color: AppColors.green),
-                      label: const Text('Confirm', style: TextStyle(color: AppColors.green, fontSize: 12, fontWeight: FontWeight.w700)),
-                      style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 9), side: BorderSide(color: AppColors.green.withValues(alpha: 0.35)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.sm))),
-                    ),
-                  ),
-                  if (onCancel != null) const SizedBox(width: 8),
-                ],
-                if (onCancel != null)
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: onCancel,
-                      icon: const Icon(Icons.cancel_outlined, size: 15, color: AppColors.red),
-                      label: const Text('Cancel', style: TextStyle(color: AppColors.red, fontSize: 12, fontWeight: FontWeight.w700)),
-                      style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 9), side: BorderSide(color: AppColors.red.withValues(alpha: 0.35)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.sm))),
-                    ),
-                  ),
-              ]),
-            ],
-          ]),
+            ),
+          ],
         ),
       ),
+    );
+  }
+
+  Future<void> _pickRange() async {
+    final now = DateTime.now();
+    final picked = await showAppDateRangePicker(
+      context: context,
+      firstDate: DateTime(now.year - 3),
+      lastDate: now.add(const Duration(days: 365)),
+      initialDateRange: DateTimeRange(start: _from, end: _to),
+    );
+    if (picked == null) return;
+    setState(() {
+      _from = picked.start;
+      _to = picked.end;
+    });
+    _load();
+  }
+
+  Widget _buildToolsBar() {
+    return TableToolsBar(
+      perPage: _perPage,
+      onPerPageChanged: (v) => setState(() {
+        _perPage = v;
+        _currentPage = 1;
+      }),
+      searchCtrl: _searchCtrl,
+      onSearchChanged: (v) => setState(() {
+        _search = v;
+        _currentPage = 1;
+      }),
+      searchHint: 'Search name, mobile or #...',
+      searchWidth: 240,
+    );
+  }
+
+  // ── Table ────────────────────────────────────────────────────────────────
+  //
+  // Web parity: `hospital.ot.appointments.partials.table` — APPT# / Patient /
+  // Mobile / Type / Date / Doctor / Status / Action columns, rendered by the
+  // shared [ScaledDataTable] (fixed-width columns that scale up together to
+  // fill available width, horizontal scroll fallback when tight).
+
+  static const _columns = [
+    ScaledTableColumn('APPT #', 96),
+    ScaledTableColumn('PATIENT', 132, grow: true),
+    ScaledTableColumn('MOBILE', 100),
+    ScaledTableColumn('TYPE', 66),
+    ScaledTableColumn('DATE', 88),
+    ScaledTableColumn('DOCTOR', 110, grow: true),
+    ScaledTableColumn('STATUS', 140),
+    ScaledTableColumn('ACTION', 160, hug: true),
+  ];
+
+  Widget _buildTableArea() {
+    if (_loading) return const AppSkeletonList();
+    if (_error != null) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.wifi_off_rounded,
+                size: 40,
+                color: AppColors.red,
+              ),
+              const SizedBox(height: 10),
+              Text(
+                _error!,
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12),
+              ),
+              const SizedBox(height: 10),
+              ElevatedButton(
+                onPressed: _load,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                ),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+    return SingleChildScrollView(
+      child: ScaledDataTable(
+        columns: _columns,
+        rows: _pageItems.map(_rowCells).toList(),
+        emptyMessage: _search.isNotEmpty
+            ? 'No results match your search.'
+            : 'No appointments found.',
+      ),
+    );
+  }
+
+  List<Widget> _rowCells(OtAppointmentItem item) => [
+    Text(
+      item.appointmentNumber,
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: TextStyle(
+        fontSize: 15,
+        fontWeight: FontWeight.w700,
+        color: AppColors.textPrimary,
+      ),
+    ),
+    Text(
+      item.fullName,
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: 12.5,
+        fontWeight: FontWeight.w600,
+        color: AppColors.darkNavy,
+      ),
+    ),
+    Text(
+      item.mobileNo,
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: AppColors.textPrimary,
+      ),
+    ),
+    _typeChip(item.appointmentType),
+    Text(
+      _fmtAppointmentDate(item.appointmentDate),
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: AppColors.textPrimary,
+      ),
+    ),
+    Text(
+      item.doctor?.name ?? '—',
+      maxLines: 1,
+      softWrap: false,
+      overflow: TextOverflow.ellipsis,
+      style: const TextStyle(
+        fontSize: 14,
+        fontWeight: FontWeight.w600,
+        color: AppColors.textPrimary,
+      ),
+    ),
+    Align(
+      alignment: Alignment.centerLeft,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.centerLeft,
+            child: StatusBadge.otAppointmentStage(
+              item.stageBadgeClass,
+              item.stageLabel,
+            ),
+          ),
+          if ((item.stageSub ?? '').isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                item.stageSub!,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(fontSize: 10.5, color: AppColors.textSecondary),
+              ),
+            ),
+        ],
+      ),
+    ),
+    _actionsCell(item),
+  ];
+
+  Widget _typeChip(String type) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        decoration: BoxDecoration(
+          color: AppColors.primaryA08,
+          borderRadius: BorderRadius.circular(AppRadius.full),
+        ),
+        child: Text(
+          _typeLabel(type),
+          maxLines: 1,
+          softWrap: false,
+          overflow: TextOverflow.ellipsis,
+          style: TextStyle(
+            fontSize: 13,
+            fontWeight: FontWeight.w700,
+            color: AppColors.primary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Web pull 2026-10-07 — Walk-In and Delete row actions are both gone from
+  // this screen entirely (appointment creation now only happens via the
+  // dashboard's "+ OT Appointment" quick-action; this undoes the earlier
+  // Delete feature too). Edit is the sole remaining action, and only on the
+  // Booked tab.
+  Widget _actionsCell(OtAppointmentItem item) {
+    final canEditRow = _tab == 'booked' && _canEdit;
+    if (!canEditRow) {
+      return Text(
+        '-',
+        style: TextStyle(fontSize: 13, color: AppColors.textDisabled),
+      );
+    }
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        TableIconAction(
+          icon: Icons.edit_outlined,
+          tooltip: 'Edit',
+          kind: TableActionKind.edit,
+          onTap: () => openOtAppointmentEditDialog(context, item, onSaved: _load),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPaginationBar() {
+    final total = _searchedItems.length;
+    final start = _perPage <= 0 ? 1 : ((_currentPage - 1) * _perPage) + 1;
+    final end = _perPage <= 0
+        ? total
+        : ((_currentPage * _perPage)).clamp(0, total);
+    return TablePaginationFooter(
+      total: total,
+      currentPage: _currentPage,
+      lastPage: _lastPage,
+      start: start,
+      end: end,
+      onPrev: () => setState(() => _currentPage--),
+      onNext: () => setState(() => _currentPage++),
     );
   }
 }
 
 // ── Add / Edit form pane (Pattern C — matches PatientFormScreen's 2-column
-// field grid, embedded in the detail pane, not a dialog) ───────────────────
+// field grid, now embedded in a modal Dialog instead of a split-pane detail
+// panel — see `_openAddDialog`/`_openEditDialog` above). Public (not
+// `_AppointmentFormPane`) so the dashboard's "OT Appointment" quick-action
+// button can reuse this exact same add form in its own dialog — mirrors
+// web's `route('hospital.ot.appointments.create')` link, matching what the
+// Walk-in/Phone buttons already do with `PatientFormScreen`. ───────────────
 
-class _AppointmentFormPane extends StatefulWidget {
+class OtAppointmentFormPane extends StatefulWidget {
   final OtAppointmentItem? item;
   final VoidCallback onSaved;
   final VoidCallback onCancel;
 
-  const _AppointmentFormPane({required this.item, required this.onSaved, required this.onCancel});
+  const OtAppointmentFormPane({
+    super.key,
+    required this.item,
+    required this.onSaved,
+    required this.onCancel,
+  });
 
   @override
-  State<_AppointmentFormPane> createState() => _AppointmentFormPaneState();
+  State<OtAppointmentFormPane> createState() => _OtAppointmentFormPaneState();
 }
 
-class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
-  static const _types = ['phone', 'walk_in', 'online', 'referral'];
-  static const _typeLabels = {'phone': 'Phone', 'walk_in': 'Walk-in', 'online': 'Online', 'referral': 'Referral'};
+class _OtAppointmentFormPaneState extends State<OtAppointmentFormPane> {
+  // Matches web's real 4 types exactly (_form.blade.php) — 'ot', not
+  // 'referral', which never existed on web at all. See
+  // OT_BUGS_ROUND4_AUDIT.md.
+  static const _types = ['phone', 'walk_in', 'online', 'ot'];
+  static const _typeLabels = {
+    'phone': 'Phone',
+    'walk_in': 'Walk-in',
+    'online': 'Online',
+    'ot': 'OT',
+  };
   static const _genders = ['male', 'female', 'other'];
 
-  late final TextEditingController _nameCtrl, _middleCtrl, _surnameCtrl, _mobileCtrl, _whatsappCtrl, _ageCtrl, _occupationCtrl, _notesCtrl;
-  String _type = 'walk_in';
+  late final TextEditingController _nameCtrl,
+      _middleCtrl,
+      _surnameCtrl,
+      _mobileCtrl,
+      _whatsappCtrl,
+      _ageCtrl,
+      _occupationCtrl;
+  String _type = 'ot';
   String _gender = 'male';
   DateTime? _date;
   OtSlotItem? _selectedSlot;
@@ -346,7 +606,13 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
   bool _loadingForm = true;
   String? _formError;
   bool _saving = false;
-  String? _nameErr, _surnameErr, _mobileErr, _ageErr, _dateErr, _doctorErr, _locationErr;
+  String? _nameErr,
+      _surnameErr,
+      _mobileErr,
+      _ageErr,
+      _dateErr,
+      _doctorErr,
+      _locationErr;
 
   List<OtSlotAppointmentConflict> _slotConflicts = [];
   bool _loadingSlot = false;
@@ -367,20 +633,35 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
     _whatsappCtrl = TextEditingController(text: it?.whatsappNo ?? '');
     _ageCtrl = TextEditingController(text: it != null ? '${it.age}' : '');
     _occupationCtrl = TextEditingController(text: it?.occupation ?? '');
-    _notesCtrl = TextEditingController(text: it?.notes ?? '');
-    _type = it?.appointmentType ?? 'walk_in';
+    _type = it?.appointmentType ?? 'ot';
     _gender = it?.gender ?? 'male';
     _doctorId = it?.doctor?.id;
     _referrerId = it?.referrerId;
     _locationId = it?.location?.id;
-    if (it != null && it.appointmentDate.isNotEmpty) _date = DateTime.tryParse(it.appointmentDate);
-    _pendingSlotTime = it?.appointmentTime;
+    if (it != null && it.appointmentDate.isNotEmpty)
+      _date = parseApiPlainDate(it.appointmentDate);
+    // The API returns appointment_time with seconds ("14:30:00" — a MySQL
+    // TIME column, no Eloquent cast), but slots compare on "HH:mm" only
+    // (_slotTimeStr) — truncate here or the match below always silently
+    // fails and the saved slot never shows as selected.
+    final rawTime = it?.appointmentTime;
+    _pendingSlotTime = (rawTime != null && rawTime.length >= 5)
+        ? rawTime.substring(0, 5)
+        : rawTime;
     _loadFormData();
   }
 
   @override
   void dispose() {
-    for (final c in [_nameCtrl, _middleCtrl, _surnameCtrl, _mobileCtrl, _whatsappCtrl, _ageCtrl, _occupationCtrl, _notesCtrl]) {
+    for (final c in [
+      _nameCtrl,
+      _middleCtrl,
+      _surnameCtrl,
+      _mobileCtrl,
+      _whatsappCtrl,
+      _ageCtrl,
+      _occupationCtrl,
+    ]) {
       c.dispose();
     }
     super.dispose();
@@ -394,28 +675,44 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
           _formData = data;
           _loadingForm = false;
           if (_pendingSlotTime != null) {
-            final match = data.slots.where((s) => _slotTimeStr(s) == _pendingSlotTime).toList();
+            final match = data.slots
+                .where((s) => _slotTimeStr(s) == _pendingSlotTime)
+                .toList();
             if (match.isNotEmpty) _selectedSlot = match.first;
           }
         });
         if (_date != null && _selectedSlot != null) _refreshSlotConflicts();
       }
     } catch (e) {
-      if (mounted) setState(() { _formError = e.toString().replaceFirst('Exception: ', ''); _loadingForm = false; });
+      if (mounted)
+        setState(() {
+          _formError = e.toString().replaceFirst('Exception: ', '');
+          _loadingForm = false;
+        });
     }
   }
 
   Future<void> _pickDate() async {
     final now = DateTime.now();
-    final picked = await showDatePicker(
+    final picked = await showAppDatePicker(
       context: context,
       initialDate: _date ?? now,
-      firstDate: widget.item == null ? now : now.subtract(const Duration(days: 365)),
+      firstDate: widget.item == null
+          ? now
+          : now.subtract(const Duration(days: 365)),
       lastDate: now.add(const Duration(days: 365)),
-      builder: (ctx, child) => Theme(data: ThemeData.light().copyWith(colorScheme: ColorScheme.light(primary: AppColors.primary)), child: child!),
+      builder: (ctx, child) => Theme(
+        data: ThemeData.light().copyWith(
+          colorScheme: ColorScheme.light(primary: AppColors.primary),
+        ),
+        child: child!,
+      ),
     );
     if (picked != null) {
-      setState(() { _date = picked; _dateErr = null; });
+      setState(() {
+        _date = picked;
+        _dateErr = null;
+      });
       _refreshSlotConflicts();
     }
   }
@@ -424,7 +721,10 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
   /// stored value) derived from the slot's start time — `null`/short values
   /// return null so a slot with no configured start time is never selectable
   /// as a time filter.
-  String? _slotTimeStr(OtSlotItem s) => (s.startTime != null && s.startTime!.length >= 5) ? s.startTime!.substring(0, 5) : null;
+  String? _slotTimeStr(OtSlotItem s) =>
+      (s.startTime != null && s.startTime!.length >= 5)
+      ? s.startTime!.substring(0, 5)
+      : null;
 
   /// 12-hour display clock ("09:00 AM") matching web's `format('h:i A')`.
   String _fmtClock(String? raw) {
@@ -436,7 +736,9 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
     return '$h12:$m $period';
   }
 
-  String _slotLabel(OtSlotItem s) => s.startTime != null && s.endTime != null ? '${s.slotName} (${_fmtClock(s.startTime)} - ${_fmtClock(s.endTime)})' : s.slotName;
+  String _slotLabel(OtSlotItem s) => s.startTime != null && s.endTime != null
+      ? '${s.slotName} (${_fmtClock(s.startTime)} - ${_fmtClock(s.endTime)})'
+      : s.slotName;
 
   /// On Date + Time change, shows a chip list of patients already booked in
   /// that exact slot — mirrors web's AJAX slot-occupancy panel (hidden if
@@ -450,65 +752,48 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
     final dateStr = toIsoDate(_date!);
     setState(() => _loadingSlot = true);
     try {
-      final conflicts = await OtAppointmentService.instance.slotAppointments(date: dateStr, time: timeStr, excludeId: widget.item?.id);
-      if (mounted) setState(() { _slotConflicts = conflicts; _loadingSlot = false; });
+      final conflicts = await OtAppointmentService.instance.slotAppointments(
+        date: dateStr,
+        time: timeStr,
+        excludeId: widget.item?.id,
+      );
+      if (mounted)
+        setState(() {
+          _slotConflicts = conflicts;
+          _loadingSlot = false;
+        });
     } catch (_) {
-      if (mounted) setState(() { _slotConflicts = []; _loadingSlot = false; });
+      if (mounted)
+        setState(() {
+          _slotConflicts = [];
+          _loadingSlot = false;
+        });
     }
   }
 
   Future<void> _addCity() async {
-    final cityCtrl = TextEditingController();
-    final distCtrl = TextEditingController();
-    final stateCtrl = TextEditingController();
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-        titlePadding: EdgeInsets.zero,
-        title: Container(
-          padding: const EdgeInsets.fromLTRB(20, 18, 16, 14),
-          decoration: BoxDecoration(gradient: LinearGradient(colors: [AppColors.primary, AppColors.blueLight], begin: Alignment.centerLeft, end: Alignment.centerRight), borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg))),
-          child: Row(children: [
-            const Icon(Icons.add_location_alt_outlined, color: Colors.white, size: 20),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('Add City', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700))),
-            IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 18), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () => Navigator.pop(ctx, false)),
-          ]),
-        ),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(height: 8),
-          TextField(controller: cityCtrl, decoration: const InputDecoration(labelText: 'City *', border: OutlineInputBorder())),
-          const SizedBox(height: 12),
-          TextField(controller: distCtrl, decoration: const InputDecoration(labelText: 'District', border: OutlineInputBorder())),
-          const SizedBox(height: 12),
-          TextField(controller: stateCtrl, decoration: const InputDecoration(labelText: 'State', border: OutlineInputBorder())),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white), child: const Text('Add')),
+    final loc = await showAddCityDialog(context);
+    if (loc == null || !mounted) return;
+    setState(() {
+      _formData = OtAppointmentFormData(
+        doctors: _formData!.doctors,
+        locations: [
+          ..._formData!.locations,
+          OtAppointmentLocation(
+            id: loc.id,
+            name: loc.city,
+            district: loc.district,
+            state: loc.state,
+          ),
         ],
-      ),
-    );
-    if (ok != true || cityCtrl.text.trim().isEmpty) return;
-    try {
-      final loc = await MastersService.instance.addLocation(city: cityCtrl.text.trim(), district: distCtrl.text.trim(), state: stateCtrl.text.trim());
-      if (!mounted) return;
-      setState(() {
-        _formData = OtAppointmentFormData(
-          doctors: _formData!.doctors,
-          locations: [..._formData!.locations, OtAppointmentLocation(id: loc.id, name: loc.city, district: loc.district, state: loc.state)],
-          referrers: _formData!.referrers,
-          slots: _formData!.slots,
-          nextAppointmentNumber: _formData!.nextAppointmentNumber,
-        );
-        _locationId = loc.id;
-        _locationErr = null;
-      });
-      showAppSnackBar(context, 'City "${loc.city}" added.', isSuccess: true);
-    } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
-    }
+        referrers: _formData!.referrers,
+        slots: _formData!.slots,
+        nextAppointmentNumber: _formData!.nextAppointmentNumber,
+      );
+      _locationId = loc.id;
+      _locationErr = null;
+    });
+    showAppSnackBar(context, 'City "${loc.city}" added.', isSuccess: true);
   }
 
   Future<void> _save() async {
@@ -522,14 +807,24 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
       _doctorErr = _doctorId == null ? 'Select a doctor' : null;
       _locationErr = _locationId == null ? 'Select a location' : null;
     });
-    if ([_nameErr, _surnameErr, _mobileErr, _ageErr, _dateErr, _doctorErr, _locationErr].any((e) => e != null)) return;
+    if ([
+      _nameErr,
+      _surnameErr,
+      _mobileErr,
+      _ageErr,
+      _dateErr,
+      _doctorErr,
+      _locationErr,
+    ].any((e) => e != null))
+      return;
 
     setState(() => _saving = true);
     try {
       final body = {
         'appointment_type': _type,
         'appointment_date': toIsoDate(_date!),
-        if (_selectedSlot != null) 'appointment_time': _slotTimeStr(_selectedSlot!),
+        if (_selectedSlot != null)
+          'appointment_time': _slotTimeStr(_selectedSlot!),
         'doctor_id': _doctorId,
         'patient_name': _nameCtrl.text.trim(),
         'middle_name': _middleCtrl.text.trim(),
@@ -541,7 +836,6 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
         'occupation': _occupationCtrl.text.trim(),
         if (_referrerId != null) 'referrer_id': _referrerId,
         'location_id': _locationId,
-        'notes': _notesCtrl.text.trim(),
       };
       if (widget.item == null) {
         await OtAppointmentService.instance.create(body);
@@ -553,7 +847,11 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
     } catch (e) {
       if (mounted) {
         setState(() => _saving = false);
-        showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
+        showAppSnackBar(
+          context,
+          e.toString().replaceFirst('Exception: ', ''),
+          isError: true,
+        );
       }
     }
   }
@@ -561,201 +859,469 @@ class _AppointmentFormPaneState extends State<_AppointmentFormPane> {
   // ── Layout helpers (matches PatientFormScreen's Pattern C field grid) ────
 
   Widget _row2(Widget a, Widget b) {
-    return LayoutBuilder(builder: (context, constraints) {
-      if (constraints.maxWidth < 520) return Column(children: [a, b]);
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: a), const SizedBox(width: 16), Expanded(child: b)]);
-    });
-  }
-
-  Widget _field(String label, Widget child) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.primary)),
-        const SizedBox(height: 5),
-        child,
-      ]),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 520) return Column(children: [a, b]);
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: a),
+            const SizedBox(width: 16),
+            Expanded(child: b),
+          ],
+        );
+      },
     );
   }
 
-  InputDecoration _deco(String label, {String? error, String? suffix}) => InputDecoration(
-        hintText: label,
-        errorText: error,
-        suffixText: suffix,
-        filled: true,
-        fillColor: Colors.white,
-        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary.withValues(alpha: 0.18))),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary.withValues(alpha: 0.18))),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
-      );
+  Widget _spaced(Widget child) =>
+      Padding(padding: const EdgeInsets.only(bottom: 14), child: child);
 
   @override
   Widget build(BuildContext context) {
     final isEdit = widget.item != null;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        IconButton(icon: Icon(Icons.close_rounded, color: AppColors.primary), onPressed: widget.onCancel, tooltip: 'Cancel'),
-        Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primaryA10, borderRadius: BorderRadius.circular(AppRadius.md)), child: Icon(isEdit ? Icons.edit_rounded : Icons.event_note_rounded, color: AppColors.primary, size: 20)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text(isEdit ? 'Edit Appointment' : 'New Appointment', style: TextStyle(color: AppColors.primary, fontSize: 17, fontWeight: FontWeight.w800)),
-            Text(isEdit ? 'Update appointment details' : 'Pre-registration — patient hasn\'t arrived yet', style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
-          ]),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            IconButton(
+              icon: Icon(Icons.close_rounded, color: AppColors.primary),
+              onPressed: widget.onCancel,
+              tooltip: 'Cancel',
+            ),
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: AppColors.primaryA10,
+                borderRadius: BorderRadius.circular(AppRadius.md),
+              ),
+              child: Icon(
+                isEdit ? Icons.edit_rounded : Icons.event_note_rounded,
+                color: AppColors.primary,
+                size: 20,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    isEdit ? 'Edit Appointment' : 'New Appointment',
+                    style: TextStyle(
+                      color: AppColors.primary,
+                      fontSize: 17,
+                      fontWeight: FontWeight.w800,
+                    ),
+                  ),
+                  Text(
+                    isEdit
+                        ? 'Update appointment details'
+                        : 'Pre-registration — patient hasn\'t arrived yet',
+                    style: const TextStyle(
+                      color: AppColors.textSecondary,
+                      fontSize: 11,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
         ),
-      ]),
-      const SizedBox(height: 16),
-      Expanded(
-        child: _loadingForm
-            ? const AppSkeletonList(count: 5, itemHeight: 60)
-            : _formError != null
-                ? Center(
-                    child: Padding(
-                      padding: const EdgeInsets.all(32),
-                      child: Column(mainAxisSize: MainAxisSize.min, children: [
-                        const Icon(Icons.wifi_off_rounded, size: 48, color: AppColors.red),
+        const SizedBox(height: 16),
+        Expanded(
+          child: _loadingForm
+              ? const AppSkeletonList(count: 5, itemHeight: 60)
+              : _formError != null
+              ? Center(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(
+                          Icons.wifi_off_rounded,
+                          size: 48,
+                          color: AppColors.red,
+                        ),
                         const SizedBox(height: 12),
                         Text(_formError!, textAlign: TextAlign.center),
                         const SizedBox(height: 16),
-                        ElevatedButton.icon(onPressed: () { setState(() => _loadingForm = true); _loadFormData(); }, icon: const Icon(Icons.refresh_rounded), label: const Text('Retry'), style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary)),
-                      ]),
+                        ElevatedButton.icon(
+                          onPressed: () {
+                            setState(() => _loadingForm = true);
+                            _loadFormData();
+                          },
+                          icon: const Icon(Icons.refresh_rounded),
+                          label: const Text('Retry'),
+                          style: ElevatedButton.styleFrom(
+                            backgroundColor: AppColors.primary,
+                          ),
+                        ),
+                      ],
                     ),
-                  )
-                : SingleChildScrollView(child: _buildForm()),
-      ),
-    ]);
+                  ),
+                )
+              : SingleChildScrollView(child: _buildForm()),
+        ),
+      ],
+    );
   }
 
   Widget _buildForm() {
     final formData = _formData!;
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      _field('Appointment Type *', Wrap(spacing: 8, children: _types.map((t) => ChoiceChip(label: Text(_typeLabels[t]!), selected: _type == t, onSelected: (_) => setState(() => _type = t))).toList())),
-      _row2(
-        _field('Date *', InkWell(onTap: _pickDate, child: InputDecorator(decoration: _deco('Select', error: _dateErr), child: Text(_date == null ? 'Select' : toIsoDate(_date!))))),
-        _field(
-          'Time',
-          DropdownButtonFormField<OtSlotItem>(
-            initialValue: _selectedSlot,
-            isExpanded: true,
-            decoration: _deco('Select slot...'),
-            items: formData.slots.map((s) => DropdownMenuItem(value: s, child: Text(_slotLabel(s), overflow: TextOverflow.ellipsis))).toList(),
-            onChanged: (v) {
-              setState(() => _selectedSlot = v);
-              _refreshSlotConflicts();
-            },
+    final apptNumber =
+        widget.item?.appointmentNumber ?? formData.nextAppointmentNumber;
+    final selectedLoc = _locationId == null
+        ? const <OtAppointmentLocation>[]
+        : formData.locations.where((l) => l.id == _locationId).toList();
+    final district = selectedLoc.isNotEmpty
+        ? (selectedLoc.first.district ?? '—')
+        : '—';
+    final state = selectedLoc.isNotEmpty
+        ? (selectedLoc.first.state ?? '—')
+        : '—';
+
+    // Field order below matches web's `_form.blade.php` exactly (client
+    // requirement: same fields, same order, no more/no less) — Appointment
+    // ID → Type → Date → Time → Contact/WhatsApp → First/Surname/Middle →
+    // Doctor → City/District/State → Age/Gender → Occupation → Referred By.
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        _spaced(
+          TextFormField(
+            enabled: false,
+            controller: TextEditingController(text: apptNumber),
+            decoration: appFieldDecoration('Appointment ID'),
           ),
         ),
-      ),
-      if (_loadingSlot || _slotConflicts.isNotEmpty)
-        Padding(
-          padding: const EdgeInsets.only(bottom: 14, top: -6),
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _loadingSlot
-                ? const SizedBox(width: 14, height: 14, child: CircularProgressIndicator(strokeWidth: 2))
-                : Wrap(spacing: 6, runSpacing: 6, children: [
-                    const Padding(padding: EdgeInsets.only(right: 2), child: Text('Already booked:', style: TextStyle(fontSize: 11, color: AppColors.textSecondary))),
-                    ..._slotConflicts.map((c) => Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                          decoration: BoxDecoration(color: AppColors.orangeA12, borderRadius: BorderRadius.circular(AppRadius.full)),
-                          child: Text(c.name, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppColors.orange)),
-                        )),
-                  ]),
+        _spaced(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'APPOINTMENT TYPE *',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.textSecondary,
+                  letterSpacing: 0.4,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Wrap(
+                spacing: 8,
+                children: _types
+                    .map(
+                      (t) => ChoiceChip(
+                        label: Text(_typeLabels[t]!),
+                        selected: _type == t,
+                        onSelected: (_) => setState(() => _type = t),
+                      ),
+                    )
+                    .toList(),
+              ),
+            ],
           ),
         ),
-      _field(
-        'Doctor *',
-        DropdownButtonFormField<int>(
-          initialValue: _doctorId,
-          isExpanded: true,
-          decoration: _deco('Select doctor...', error: _doctorErr),
-          items: formData.doctors.map((d) => DropdownMenuItem(value: d.id, child: Text(d.name, overflow: TextOverflow.ellipsis))).toList(),
-          onChanged: (v) => setState(() { _doctorId = v; _doctorErr = null; }),
-        ),
-      ),
-      _row2(
-        _field('First Name *', TextFormField(controller: _nameCtrl, textCapitalization: TextCapitalization.words, decoration: _deco('First Name', error: _nameErr))),
-        _field('Surname *', TextFormField(controller: _surnameCtrl, textCapitalization: TextCapitalization.words, decoration: _deco('Surname', error: _surnameErr))),
-      ),
-      _row2(
-        _field('Middle Name', TextFormField(controller: _middleCtrl, textCapitalization: TextCapitalization.words, decoration: _deco('Middle Name'))),
-        _field('Occupation', TextFormField(controller: _occupationCtrl, decoration: _deco('Occupation'))),
-      ),
-      _row2(
-        _field('Mobile No *', TextFormField(controller: _mobileCtrl, keyboardType: TextInputType.phone, inputFormatters: [FilteringTextInputFormatter.digitsOnly], decoration: _deco('Mobile No', error: _mobileErr))),
-        _field('WhatsApp No', TextFormField(controller: _whatsappCtrl, keyboardType: TextInputType.phone, inputFormatters: [FilteringTextInputFormatter.digitsOnly], decoration: _deco('Same if blank'))),
-      ),
-      _row2(
-        _field('Age *', TextFormField(controller: _ageCtrl, keyboardType: TextInputType.number, inputFormatters: [FilteringTextInputFormatter.digitsOnly], decoration: _deco('Age', error: _ageErr))),
-        _field(
-          'Gender *',
-          DropdownButtonFormField<String>(
-            initialValue: _gender,
-            decoration: _deco('Gender'),
-            items: _genders.map((g) => DropdownMenuItem(value: g, child: Text(g[0].toUpperCase() + g.substring(1)))).toList(),
-            onChanged: (v) => setState(() => _gender = v ?? _gender),
-          ),
-        ),
-      ),
-      _field(
-        'City *',
-        Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-          Align(
-            alignment: Alignment.centerRight,
-            child: TextButton.icon(
-              onPressed: _addCity,
-              icon: Icon(Icons.add_rounded, size: 14, color: AppColors.primary),
-              label: Text('Add City', style: TextStyle(fontSize: 12, color: AppColors.primary)),
-              style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0), minimumSize: Size.zero),
+        _row2(
+          _spaced(
+            InkWell(
+              onTap: _pickDate,
+              child: InputDecorator(
+                decoration: appFieldDecoration(
+                  'Date *',
+                ).copyWith(errorText: _dateErr),
+                child: Text(_date == null ? 'Select' : toIsoDate(_date!)),
+              ),
             ),
           ),
+          _spaced(
+            DropdownButtonFormField<OtSlotItem>(
+              initialValue: _selectedSlot,
+              isExpanded: true,
+              decoration: appFieldDecoration('Time', hint: 'Select slot...'),
+              items: formData.slots
+                  .map(
+                    (s) => DropdownMenuItem(
+                      value: s,
+                      child: Text(
+                        _slotLabel(s),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) {
+                setState(() => _selectedSlot = v);
+                _refreshSlotConflicts();
+              },
+            ),
+          ),
+        ),
+        if (_loadingSlot || _slotConflicts.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 14),
+            child: Align(
+              alignment: Alignment.centerLeft,
+              child: _loadingSlot
+                  ? const SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : Wrap(
+                      spacing: 6,
+                      runSpacing: 6,
+                      children: [
+                        const Padding(
+                          padding: EdgeInsets.only(right: 2),
+                          child: Text(
+                            'Already booked:',
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                        ),
+                        ..._slotConflicts.map(
+                          (c) => Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.orangeA12,
+                              borderRadius: BorderRadius.circular(
+                                AppRadius.full,
+                              ),
+                            ),
+                            child: Text(
+                              c.name,
+                              style: const TextStyle(
+                                fontSize: 11,
+                                fontWeight: FontWeight.w700,
+                                color: AppColors.orange,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        _row2(
+          _spaced(
+            TextFormField(
+              controller: _mobileCtrl,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: appFieldDecoration(
+                'Mobile No *',
+              ).copyWith(errorText: _mobileErr),
+            ),
+          ),
+          _spaced(
+            TextFormField(
+              controller: _whatsappCtrl,
+              keyboardType: TextInputType.phone,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: appFieldDecoration(
+                'WhatsApp No',
+                hint: 'Same if blank',
+              ),
+            ),
+          ),
+        ),
+        _row2(
+          _spaced(
+            TextFormField(
+              controller: _nameCtrl,
+              textCapitalization: TextCapitalization.words,
+              decoration: appFieldDecoration(
+                'First Name *',
+              ).copyWith(errorText: _nameErr),
+            ),
+          ),
+          _spaced(
+            TextFormField(
+              controller: _surnameCtrl,
+              textCapitalization: TextCapitalization.words,
+              decoration: appFieldDecoration(
+                'Surname *',
+              ).copyWith(errorText: _surnameErr),
+            ),
+          ),
+        ),
+        _spaced(
+          TextFormField(
+            controller: _middleCtrl,
+            textCapitalization: TextCapitalization.words,
+            decoration: appFieldDecoration('Middle Name'),
+          ),
+        ),
+        _spaced(
           DropdownButtonFormField<int>(
-            initialValue: _locationId,
+            initialValue: _doctorId,
             isExpanded: true,
-            decoration: _deco('Select city...', error: _locationErr),
-            items: formData.locations.map((l) => DropdownMenuItem(value: l.id, child: Text(l.name, overflow: TextOverflow.ellipsis))).toList(),
-            onChanged: (v) => setState(() { _locationId = v; _locationErr = null; }),
-          ),
-        ]),
-      ),
-      if (_locationId != null)
-        Builder(builder: (_) {
-          final loc = formData.locations.where((l) => l.id == _locationId).toList();
-          if (loc.isEmpty) return const SizedBox.shrink();
-          return _row2(
-            _field('District', TextFormField(enabled: false, controller: TextEditingController(text: loc.first.district ?? '—'), decoration: _deco('District'))),
-            _field('State', TextFormField(enabled: false, controller: TextEditingController(text: loc.first.state ?? '—'), decoration: _deco('State'))),
-          );
-        }),
-      _field(
-        'Referred By',
-        DropdownButtonFormField<int?>(
-          initialValue: _referrerId,
-          isExpanded: true,
-          decoration: _deco('Select referrer...'),
-          items: [const DropdownMenuItem(value: null, child: Text('None')), ...formData.referrers.map((r) => DropdownMenuItem(value: r.id, child: Text(r.name, overflow: TextOverflow.ellipsis)))],
-          onChanged: (v) => setState(() => _referrerId = v),
-        ),
-      ),
-      _field('Notes', TextFormField(controller: _notesCtrl, maxLines: 3, decoration: _deco('Notes'))),
-      const SizedBox(height: 12),
-      Row(children: [
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _saving ? null : _save,
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40))),
-            child: _saving ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Text('Save', style: TextStyle(fontWeight: FontWeight.w700)),
+            decoration: appFieldDecoration(
+              'Doctor *',
+              hint: 'Select doctor...',
+            ).copyWith(errorText: _doctorErr),
+            items: formData.doctors
+                .map(
+                  (d) => DropdownMenuItem(
+                    value: d.id,
+                    child: Text(d.name, overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) => setState(() {
+              _doctorId = v;
+              _doctorErr = null;
+            }),
           ),
         ),
-        const SizedBox(width: 12),
-        OutlinedButton(
-          onPressed: widget.onCancel,
-          style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40)), side: BorderSide(color: AppColors.primaryA22)),
-          child: const Text('Cancel'),
+        _spaced(
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Align(
+                alignment: Alignment.centerRight,
+                child: TextButton.icon(
+                  onPressed: _addCity,
+                  icon: Icon(
+                    Icons.add_rounded,
+                    size: 14,
+                    color: AppColors.primary,
+                  ),
+                  label: Text(
+                    'Add City',
+                    style: TextStyle(fontSize: 12, color: AppColors.primary),
+                  ),
+                  style: TextButton.styleFrom(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 4,
+                      vertical: 0,
+                    ),
+                    minimumSize: Size.zero,
+                  ),
+                ),
+              ),
+              DropdownButtonFormField<int>(
+                initialValue: _locationId,
+                isExpanded: true,
+                decoration: appFieldDecoration(
+                  'City *',
+                  hint: 'Select city...',
+                ).copyWith(errorText: _locationErr),
+                items: formData.locations
+                    .map(
+                      (l) => DropdownMenuItem(
+                        value: l.id,
+                        child: Text(l.name, overflow: TextOverflow.ellipsis),
+                      ),
+                    )
+                    .toList(),
+                onChanged: (v) => setState(() {
+                  _locationId = v;
+                  _locationErr = null;
+                }),
+              ),
+            ],
+          ),
         ),
-      ]),
-      const SizedBox(height: 8),
-    ]);
+        // Web always renders District/State (empty/readonly until a city is
+        // chosen) rather than hiding them — matched here.
+        _row2(
+          _spaced(
+            TextFormField(
+              enabled: false,
+              controller: TextEditingController(text: district),
+              decoration: appFieldDecoration('District'),
+            ),
+          ),
+          _spaced(
+            TextFormField(
+              enabled: false,
+              controller: TextEditingController(text: state),
+              decoration: appFieldDecoration('State'),
+            ),
+          ),
+        ),
+        _row2(
+          _spaced(
+            TextFormField(
+              controller: _ageCtrl,
+              keyboardType: TextInputType.number,
+              inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+              decoration: appFieldDecoration(
+                'Age *',
+              ).copyWith(errorText: _ageErr),
+            ),
+          ),
+          _spaced(
+            DropdownButtonFormField<String>(
+              initialValue: _gender,
+              decoration: appFieldDecoration('Gender *'),
+              items: _genders
+                  .map(
+                    (g) => DropdownMenuItem(
+                      value: g,
+                      child: Text(g[0].toUpperCase() + g.substring(1)),
+                    ),
+                  )
+                  .toList(),
+              onChanged: (v) => setState(() => _gender = v ?? _gender),
+            ),
+          ),
+        ),
+        _spaced(
+          TextFormField(
+            controller: _occupationCtrl,
+            decoration: appFieldDecoration('Occupation'),
+          ),
+        ),
+        _spaced(
+          DropdownButtonFormField<int?>(
+            initialValue: _referrerId,
+            isExpanded: true,
+            decoration: appFieldDecoration(
+              'Referred By',
+              hint: 'Select referrer...',
+            ),
+            items: [
+              const DropdownMenuItem(value: null, child: Text('None')),
+              ...formData.referrers.map(
+                (r) => DropdownMenuItem(
+                  value: r.id,
+                  child: Text(r.name, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            ],
+            onChanged: (v) => setState(() => _referrerId = v),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            Expanded(
+              child: AppPrimaryButton(
+                label: 'Save',
+                loading: _saving,
+                onPressed: _save,
+              ),
+            ),
+            const SizedBox(width: 12),
+            AppSecondaryButton(onPressed: widget.onCancel),
+          ],
+        ),
+        const SizedBox(height: 8),
+      ],
+    );
   }
 }

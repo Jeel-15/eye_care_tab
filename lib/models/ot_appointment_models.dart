@@ -42,8 +42,20 @@ class OtAppointmentItem {
   final String gender;
   final String? occupation;
   final int? referrerId;
-  final String? notes;
   final String status; // booked | confirmed | cancelled | completed
+  // Web pull 2026-10-07 — Booked tab: always "Booked". Completed tab: the
+  // converted patient's live workflow stage (Primary Exam → ... →
+  // Discharge), not the old OT-booking-specific 16-stage system.
+  final String stageLabel;
+  final String stageBadgeClass;
+  final String? stageSub;
+  // Web pull 2026-09-29 — web's Action column dropped the Confirm/Cancel
+  // icons entirely in favor of a single "Walk-In" button, matching
+  // `OtAppointment::canWalkIn()`: status booked/confirmed AND not already
+  // converted to a patient. Needed to replicate that same gate here.
+  final int? convertedPatientId;
+
+  bool get canWalkIn => (status == 'booked' || status == 'confirmed') && convertedPatientId == null;
 
   const OtAppointmentItem({
     required this.id,
@@ -62,8 +74,11 @@ class OtAppointmentItem {
     required this.gender,
     this.occupation,
     this.referrerId,
-    this.notes,
     required this.status,
+    required this.stageLabel,
+    required this.stageBadgeClass,
+    this.stageSub,
+    this.convertedPatientId,
   });
 
   String get fullName => [patientName, middleName, surname].where((s) => s != null && s.isNotEmpty).join(' ');
@@ -85,8 +100,11 @@ class OtAppointmentItem {
         gender: j['gender'] as String? ?? '',
         occupation: j['occupation'] as String?,
         referrerId: j['referrer_id'] as int?,
-        notes: j['notes'] as String?,
         status: j['status'] as String? ?? 'booked',
+        stageLabel: j['stage_label'] as String? ?? '',
+        stageBadgeClass: j['stage_badge_class'] as String? ?? '',
+        stageSub: j['stage_sub'] as String?,
+        convertedPatientId: j['converted_patient_id'] as int?,
       );
 }
 

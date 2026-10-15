@@ -50,7 +50,7 @@ class OnboardingService {
 
   static final _adminSlides = [
     const OnboardingSlideData(
-      headline: 'Welcome to Eye-SaaS HMS',
+      headline: 'Welcome to Eyenosis',
       subtext: "Here's a 30-second look at what matters most for your role.",
       accent: AppColors.blue,
       cardKind: MockCardKind.dashboard,
@@ -77,7 +77,7 @@ class OnboardingService {
 
   static final _doctorSlides = [
     const OnboardingSlideData(
-      headline: 'Welcome to Eye-SaaS HMS',
+      headline: 'Welcome to Eyenosis',
       subtext: "Here's a quick look at your clinical workflow.",
       accent: AppColors.blue,
       cardKind: MockCardKind.queue,
@@ -104,7 +104,7 @@ class OnboardingService {
 
   static final _frontDeskSlides = [
     const OnboardingSlideData(
-      headline: 'Welcome to Eye-SaaS HMS',
+      headline: 'Welcome to Eyenosis',
       subtext: "Here's how patients move through your day.",
       accent: AppColors.blue,
       cardKind: MockCardKind.patients,
@@ -125,7 +125,7 @@ class OnboardingService {
 
   static final _otSlides = [
     const OnboardingSlideData(
-      headline: 'Welcome to Eye-SaaS HMS',
+      headline: 'Welcome to Eyenosis',
       subtext: "Here's what you'll manage for the OT.",
       accent: AppColors.blue,
       cardKind: MockCardKind.ot,

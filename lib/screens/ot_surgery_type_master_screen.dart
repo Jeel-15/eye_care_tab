@@ -1,8 +1,15 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import '../constants/app_colors.dart';
+import '../widgets/table_row_action.dart';
+import '../utils/app_dialogs.dart';
 import '../constants/app_radius.dart';
+import '../constants/permissions.dart';
+import '../services/permission_service.dart';
 import '../services/ot_surgery_type_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/app_dialog.dart';
+import '../widgets/form_kit.dart';
 import '../widgets/skeleton.dart';
 
 /// Tablet OT Surgery Types master — OT Type dropdown + surgery name.
@@ -12,17 +19,29 @@ class OtSurgeryTypeMasterScreen extends StatefulWidget {
   const OtSurgeryTypeMasterScreen({super.key, required this.accentColor});
 
   @override
-  State<OtSurgeryTypeMasterScreen> createState() => _OtSurgeryTypeMasterScreenState();
+  State<OtSurgeryTypeMasterScreen> createState() =>
+      _OtSurgeryTypeMasterScreenState();
 }
 
 class _OtSurgeryTypeMasterScreenState extends State<OtSurgeryTypeMasterScreen> {
+  final _p = PermissionService.instance;
   List<OtSurgeryTypeItem> _all = [];
   List<OtTypeOption> _otTypes = [];
   bool _loading = false;
   String? _error;
   String _query = '';
 
-  List<OtSurgeryTypeItem> get _filtered => _query.isEmpty ? _all : _all.where((i) => i.surgeryName.toLowerCase().contains(_query.toLowerCase())).toList();
+  bool get _canAdd => _p.can(Perm.masterOtSurgeryTypeAdd);
+  bool get _canEdit => _p.can(Perm.masterOtSurgeryTypeEdit);
+  bool get _canDelete => _p.can(Perm.masterOtSurgeryTypeDelete);
+
+  List<OtSurgeryTypeItem> get _filtered => _query.isEmpty
+      ? _all
+      : _all
+            .where(
+              (i) => i.surgeryName.toLowerCase().contains(_query.toLowerCase()),
+            )
+            .toList();
 
   @override
   void initState() {
@@ -31,109 +50,331 @@ class _OtSurgeryTypeMasterScreenState extends State<OtSurgeryTypeMasterScreen> {
   }
 
   Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
     try {
-      final results = await Future.wait([OtSurgeryTypeService.instance.fetchAll(), OtSurgeryTypeService.instance.fetchOtTypes()]);
-      if (mounted) setState(() { _all = results[0] as List<OtSurgeryTypeItem>; _otTypes = results[1] as List<OtTypeOption>; _loading = false; });
+      final results = await Future.wait([
+        OtSurgeryTypeService.instance.fetchAll(),
+        OtSurgeryTypeService.instance.fetchOtTypes(),
+      ]);
+      if (mounted)
+        setState(() {
+          _all = results[0] as List<OtSurgeryTypeItem>;
+          _otTypes = results[1] as List<OtTypeOption>;
+          _loading = false;
+        });
     } catch (e) {
-      if (mounted) setState(() { _error = e.toString().replaceFirst('Exception: ', ''); _loading = false; });
+      if (mounted)
+        setState(() {
+          _error = e.toString().replaceFirst('Exception: ', '');
+          _loading = false;
+        });
     }
   }
 
   Future<void> _delete(OtSurgeryTypeItem item) async {
-    final ok = await showDialog<bool>(context: context, builder: (ctx) => AlertDialog(title: const Text('Delete?'), content: Text('Delete "${item.surgeryName}"?'), actions: [TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')), TextButton(onPressed: () => Navigator.pop(ctx, true), child: const Text('Delete', style: TextStyle(color: AppColors.red)))]));
-    if (ok != true || !mounted) return;
+    final ok = await showAppConfirmDialog(
+      context,
+      title: 'Delete Surgery Type',
+      message: 'Delete "${item.surgeryName}"? This cannot be undone.',
+      confirmLabel: 'Delete',
+      destructive: true,
+    );
+    if (!ok || !mounted) return;
     try {
       await OtSurgeryTypeService.instance.delete(item.id);
       await _load();
     } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
+      if (mounted)
+        showAppSnackBar(
+          context,
+          e.toString().replaceFirst('Exception: ', ''),
+          isError: true,
+        );
     }
   }
 
   Future<void> _openDialog({OtSurgeryTypeItem? item}) async {
-    final nameCtrl = TextEditingController(text: item?.surgeryName ?? '');
-    int? otTypeId = item?.otTypeId ?? (_otTypes.isNotEmpty ? _otTypes.first.id : null);
-    bool saving = false;
-    String? nameErr, typeErr;
-
-    await showDialog<void>(context: context, builder: (dCtx) => StatefulBuilder(builder: (_, ss) {
-      Future<void> save() async {
-        final name = nameCtrl.text.trim();
-        if (name.isEmpty) { ss(() => nameErr = 'Required'); return; }
-        if (otTypeId == null) { ss(() => typeErr = 'Select an OT type'); return; }
-        ss(() { saving = true; nameErr = null; typeErr = null; });
-        try {
-          if (item == null) {
-            await OtSurgeryTypeService.instance.create(otTypeId!, name);
-          } else {
-            await OtSurgeryTypeService.instance.update(item.id, otTypeId!, name);
-          }
-          if (mounted) Navigator.pop(dCtx);
-          await _load();
-        } catch (e) {
-          ss(() => saving = false);
-          if (mounted) showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
-        }
-      }
-      return AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-        title: Text(item == null ? 'Add Surgery Type' : 'Edit Surgery Type'),
-        content: SizedBox(width: 360, child: Column(mainAxisSize: MainAxisSize.min, children: [
-          DropdownButtonFormField<int>(initialValue: otTypeId, isExpanded: true, decoration: InputDecoration(labelText: 'OT Type', errorText: typeErr, border: const OutlineInputBorder()), items: _otTypes.map((t) => DropdownMenuItem(value: t.id, child: Text(t.name, overflow: TextOverflow.ellipsis))).toList(), onChanged: (v) => ss(() => otTypeId = v)),
-          const SizedBox(height: 12),
-          TextFormField(controller: nameCtrl, decoration: InputDecoration(labelText: 'Surgery Name', errorText: nameErr, border: const OutlineInputBorder())),
-        ])),
-        actions: [
-          TextButton(onPressed: saving ? null : () => Navigator.pop(dCtx), child: const Text('Cancel')),
-          ElevatedButton(onPressed: saving ? null : save, style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white), child: saving ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white)) : const Text('Save')),
-        ],
-      );
-    }));
-    nameCtrl.dispose();
+    final saved = await showDialog<bool>(
+      context: context,
+      builder: (_) => _OtSurgeryTypeDialog(
+        item: item,
+        otTypes: _otTypes,
+        accentColor: widget.accentColor,
+      ),
+    );
+    if (saved == true && mounted) await _load();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        Icon(Icons.cut_rounded, color: widget.accentColor, size: 20),
-        const SizedBox(width: 10),
-        const Expanded(child: Text('OT Surgery Types', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
-        IconButton(icon: const Icon(Icons.refresh_rounded), tooltip: 'Refresh', color: widget.accentColor, onPressed: _loading ? null : _load),
-        const SizedBox(width: 4),
-        ElevatedButton.icon(onPressed: () => _openDialog(), icon: const Icon(Icons.add_rounded, size: 16), label: const Text('Add'), style: ElevatedButton.styleFrom(backgroundColor: widget.accentColor, foregroundColor: Colors.white)),
-      ]),
-      const SizedBox(height: 14),
-      TextField(onChanged: (v) => setState(() => _query = v.trim()), decoration: InputDecoration(hintText: 'Search surgery types...', prefixIcon: const Icon(Icons.search_rounded, size: 20), filled: true, fillColor: AppColors.background, isDense: true, contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 12), border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide.none))),
-      const SizedBox(height: 12),
-      Expanded(child: _buildBody()),
-    ]);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.cut_rounded, color: widget.accentColor, size: 20),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                'OT Surgery Types',
+                style: TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.textPrimary,
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.refresh_rounded),
+              tooltip: 'Refresh',
+              color: widget.accentColor,
+              onPressed: _loading ? null : _load,
+            ),
+            const SizedBox(width: 4),
+            if (_canAdd)
+              ElevatedButton.icon(
+                onPressed: () => _openDialog(),
+                icon: const Icon(Icons.add_rounded, size: 16),
+                label: const Text('Add'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: widget.accentColor,
+                  foregroundColor: Colors.white,
+                ),
+              ),
+          ],
+        ),
+        const SizedBox(height: 14),
+        TextField(
+          onChanged: (v) => setState(() => _query = v.trim()),
+          decoration: InputDecoration(
+            hintText: 'Search surgery types...',
+            prefixIcon: const Icon(Icons.search_rounded, size: 20),
+            filled: true,
+            fillColor: AppColors.background,
+            isDense: true,
+            contentPadding: const EdgeInsets.symmetric(
+              vertical: 10,
+              horizontal: 12,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              borderSide: BorderSide.none,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        Expanded(child: _buildBody()),
+      ],
+    );
   }
 
   Widget _buildBody() {
     if (_loading) return const AppSkeletonList(count: 6, itemHeight: 70);
-    if (_error != null) return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [Text(_error!), const SizedBox(height: 10), ElevatedButton(onPressed: _load, child: const Text('Retry'))]));
+    if (_error != null)
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_error!),
+            const SizedBox(height: 10),
+            ElevatedButton(onPressed: _load, child: const Text('Retry')),
+          ],
+        ),
+      );
     final items = _filtered;
-    if (items.isEmpty) return Center(child: Text(_query.isNotEmpty ? 'No results' : 'No surgery types yet.', style: const TextStyle(color: AppColors.textDisabled)));
-    return ListView.separated(
-      itemCount: items.length,
-      separatorBuilder: (_, _) => const SizedBox(height: 8),
-      itemBuilder: (_, i) {
-        final item = items[i];
-        return Container(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
-          child: Row(children: [
-            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(item.surgeryName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600)),
-              Text(item.otTypeName, style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary)),
-            ])),
-            IconButton(icon: const Icon(Icons.edit_outlined, size: 18, color: AppColors.orange), onPressed: () => _openDialog(item: item)),
-            IconButton(icon: const Icon(Icons.delete_outline_rounded, size: 18, color: AppColors.red), onPressed: () => _delete(item)),
-          ]),
+    if (items.isEmpty)
+      return Center(
+        child: Text(
+          _query.isNotEmpty ? 'No results' : 'No surgery types yet.',
+          style: const TextStyle(color: AppColors.textDisabled),
+        ),
+      );
+    return AppRefreshIndicator(
+      onRefresh: _load,
+      child: ListView.separated(
+        physics: const AlwaysScrollableScrollPhysics(),
+        itemCount: items.length,
+        separatorBuilder: (_, _) => const SizedBox(height: 8),
+        itemBuilder: (_, i) {
+          final item = items[i];
+          return Container(
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(AppRadius.md),
+              border: Border.all(color: AppColors.primaryA08),
+            ),
+            child: Row(
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        item.surgeryName,
+                        style: const TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      Text(
+                        item.otTypeName,
+                        style: const TextStyle(
+                          fontSize: 11.5,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (_canEdit)
+                  TableIconAction(
+                    icon: Icons.edit_outlined,
+                    tooltip: 'Edit',
+                    kind: TableActionKind.edit,
+                    onTap: () => _openDialog(item: item),
+                  ),
+                if (_canDelete)
+                  TableIconAction(
+                    icon: Icons.delete_outline_rounded,
+                    tooltip: 'Delete',
+                    kind: TableActionKind.delete,
+                    onTap: () => _delete(item),
+                  ),
+              ],
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+class _OtSurgeryTypeDialog extends StatefulWidget {
+  final OtSurgeryTypeItem? item;
+  final List<OtTypeOption> otTypes;
+  final Color accentColor;
+
+  const _OtSurgeryTypeDialog({
+    required this.item,
+    required this.otTypes,
+    required this.accentColor,
+  });
+
+  @override
+  State<_OtSurgeryTypeDialog> createState() => _OtSurgeryTypeDialogState();
+}
+
+class _OtSurgeryTypeDialogState extends State<_OtSurgeryTypeDialog> {
+  late final TextEditingController _nameCtrl;
+  int? _otTypeId;
+  bool _saving = false;
+  String? _nameErr;
+  String? _typeErr;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameCtrl = TextEditingController(text: widget.item?.surgeryName ?? '');
+    _otTypeId =
+        widget.item?.otTypeId ??
+        (widget.otTypes.isNotEmpty ? widget.otTypes.first.id : null);
+  }
+
+  @override
+  void dispose() {
+    _nameCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _save() async {
+    final name = _nameCtrl.text.trim();
+    if (name.isEmpty) {
+      setState(() => _nameErr = 'Required');
+      return;
+    }
+    if (_otTypeId == null) {
+      setState(() => _typeErr = 'Select an OT type');
+      return;
+    }
+    setState(() {
+      _saving = true;
+      _nameErr = null;
+      _typeErr = null;
+    });
+    try {
+      final item = widget.item;
+      if (item == null) {
+        await OtSurgeryTypeService.instance.create(_otTypeId!, name);
+      } else {
+        await OtSurgeryTypeService.instance.update(item.id, _otTypeId!, name);
+      }
+      if (mounted) Navigator.pop(context, true);
+    } catch (e) {
+      if (mounted) {
+        setState(() => _saving = false);
+        showAppSnackBar(
+          context,
+          e.toString().replaceFirst('Exception: ', ''),
+          isError: true,
         );
-      },
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isEdit = widget.item != null;
+    return AppDialog(
+      size: AppDialogSize.small,
+      header: AppDialogHeader(
+        icon: isEdit ? Icons.edit_outlined : Icons.add_rounded,
+        title: isEdit ? 'Edit Surgery Type' : 'Add Surgery Type',
+        colors: [widget.accentColor, widget.accentColor],
+        onClose: _saving ? null : () => Navigator.pop(context, false),
+      ),
+      body: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          DropdownButtonFormField<int>(
+            initialValue: _otTypeId,
+            isExpanded: true,
+            decoration: appFieldDecoration(
+              'OT Type',
+            ).copyWith(errorText: _typeErr),
+            items: widget.otTypes
+                .map(
+                  (t) => DropdownMenuItem(
+                    value: t.id,
+                    child: Text(t.name, overflow: TextOverflow.ellipsis),
+                  ),
+                )
+                .toList(),
+            onChanged: (v) => setState(() => _otTypeId = v),
+          ),
+          const SizedBox(height: 14),
+          TextFormField(
+            controller: _nameCtrl,
+            decoration: appFieldDecoration(
+              'Surgery Name',
+            ).copyWith(errorText: _nameErr),
+          ),
+        ],
+      ),
+      actions: [
+        AppSecondaryButton(
+          onPressed: _saving ? null : () => Navigator.pop(context, false),
+        ),
+        AppPrimaryButton(
+          label: 'Save',
+          color: widget.accentColor,
+          loading: _saving,
+          onPressed: _save,
+        ),
+      ],
     );
   }
 }

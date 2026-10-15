@@ -1,18 +1,26 @@
 import 'package:flutter/material.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
+import 'app_dialog.dart';
+import 'form_kit.dart';
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// [AnimatedSwitcher.layoutBuilder] that stacks children top-aligned instead
-/// of the default [Alignment.center]. Without this, any screen whose content
-/// is shorter than the shell's available height (e.g. a narrow-layout screen
-/// with a fixed-height inner section) gets vertically centered inside the
-/// switcher's Stack, leaving equal blank bands above and below it instead of
-/// starting at the top like every other screen.
+/// [AnimatedSwitcher.layoutBuilder] that stacks children top-left-aligned
+/// instead of the default [Alignment.center]. Without this, any screen whose
+/// content is shorter than the shell's available height (e.g. a
+/// narrow-layout screen with a fixed-height inner section) gets vertically
+/// centered inside the switcher's Stack, leaving equal blank bands above and
+/// below it instead of starting at the top like every other screen.
+/// [Alignment.topLeft] (not [Alignment.topCenter]) matters just as much:
+/// the Stack sizes to its widest child, and any screen whose own content
+/// doesn't stretch to fill the available width (e.g. `Column`s that default
+/// to `CrossAxisAlignment.start`) would otherwise get shifted toward the
+/// horizontal center too — most visibly on the tablet shell's doctor
+/// dashboard once the rail is collapsed and the content pane widens.
 Widget topAlignedSwitcherLayout(Widget? currentChild, List<Widget> previousChildren) {
   return Stack(
-    alignment: Alignment.topCenter,
+    alignment: Alignment.topLeft,
     children: [
       ...previousChildren,
       ?currentChild,
@@ -124,12 +132,18 @@ class AnimatedListItem extends StatefulWidget {
   final Widget child;
   final int index;
   final int maxStagger;
+  /// Delay per index step, in ms — 30ms (the default) suits a long list of
+  /// many small rows; a screen with only a handful of large sections (e.g.
+  /// a detail modal's top-level cards) reads better with a slower ~120ms
+  /// step so each section is visibly distinct instead of arriving at once.
+  final int staggerMs;
 
   const AnimatedListItem({
     super.key,
     required this.child,
     required this.index,
     this.maxStagger = 6,
+    this.staggerMs = 30,
   });
 
   @override
@@ -157,7 +171,7 @@ class _AnimatedListItemState extends State<AnimatedListItem>
     ).animate(curve);
 
     if (widget.index < widget.maxStagger) {
-      Future.delayed(Duration(milliseconds: widget.index * 30), () {
+      Future.delayed(Duration(milliseconds: widget.index * widget.staggerMs), () {
         if (mounted) _ctrl.forward();
       });
     } else {
@@ -229,19 +243,17 @@ Future<void> showStaleRecordDialog(BuildContext context, String message, VoidCal
   return showDialog<void>(
     context: context,
     barrierDismissible: false,
-    builder: (ctx) => AlertDialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-      icon: Icon(Icons.sync_problem_rounded, color: AppColors.orange, size: 32),
-      title: const Text('Record Changed'),
-      content: Text(message),
+    builder: (ctx) => AppDialog(
+      size: AppDialogSize.small,
+      header: AppDialogHeader(icon: Icons.sync_problem_rounded, title: 'Record Changed', colors: const [AppColors.orange, AppColors.orange]),
+      body: Text(message, style: const TextStyle(fontSize: 14, height: 1.45, color: AppColors.darkNavy)),
       actions: [
-        ElevatedButton(
+        AppPrimaryButton(
+          label: 'OK, Reload',
           onPressed: () {
             Navigator.of(ctx).pop();
             onReload();
           },
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white),
-          child: const Text('OK, Reload'),
         ),
       ],
     ),

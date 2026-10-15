@@ -1,10 +1,11 @@
 ﻿import 'package:flutter/material.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
-import '../constants/permissions.dart';
 import '../services/permission_service.dart';
+import '../widgets/auto_fit_tile_grid.dart';
 import '../widgets/split_pane_scaffold.dart';
 import 'case_type_master_screen.dart';
+import 'duration_master_screen.dart';
 import 'generic_master_screen.dart';
 import 'location_master_screen.dart';
 import 'ot_charge_head_master_screen.dart';
@@ -53,7 +54,23 @@ class _MasterSection {
 /// masters, or one of the 6 custom-field screens). Ported from
 /// eye_care_app/lib/screens/masters_screen.dart.
 class MastersScreen extends StatefulWidget {
-  const MastersScreen({super.key});
+  /// True when opened from the doctor top-nav's "Diagnosis Master" entry —
+  /// web's own doctor navbar (`hospital/layouts/app.blade.php`'s
+  /// `.black-menu-bar`, confirmed 2026-09-21) links ONLY to C/O, KCO, H/O,
+  /// O/E (Anterior Segment), FUNDUS (Posterior Segment), DIAGNOSIS, ADVICE
+  /// — i.e. exactly the "Clinical" + "Anterior Segment (O/E)" +
+  /// "Posterior Segment (Fundus)" sub-groups below, and NEVER Basic
+  /// Masters, OT Masters, or the "Vision Values" sub-group (V/N, Vn C GL,
+  /// Vn C ST, PH NV/N, NR V/N, SPH/CYL, Axis, NCT) — those simply don't
+  /// exist as links anywhere in that dropdown, regardless of what the
+  /// doctor's permissions would otherwise allow. This screen doubles as
+  /// the general admin "Masters" page (Basic + OT + full Eye Exam,
+  /// including Vision Values) when opened normally — `eyeExamOnly`
+  /// narrows it to just the 3 web-confirmed sub-groups instead, fixing a
+  /// bug where doctors saw more masters here than web ever shows them.
+  final bool eyeExamOnly;
+
+  const MastersScreen({super.key, this.eyeExamOnly = false});
 
   @override
   State<MastersScreen> createState() => _MastersScreenState();
@@ -112,34 +129,91 @@ class _MastersScreenState extends State<MastersScreen> {
     _MasterItem(Icons.signal_cellular_alt_rounded, 'F/R', Color(0xFF7F8C8D), slug: 'fr', hasFavourite: true),
   ];
 
+  static const _eyeFeatureBySlug = <String, String>{
+    'complaints': 'eye_exam_chief_complaints',
+    'kcos': 'eye_exam_kco',
+    'hno': 'eye_exam_hno',
+    'diagnoses': 'eye_exam_diagnosis',
+    'advices': 'eye_exam_advice',
+    'vn': 'eye_exam_vn',
+    'vngl': 'eye_exam_vngl',
+    'vnst': 'eye_exam_vnst',
+    'pnvn': 'eye_exam_pnvn',
+    'nrvn': 'eye_exam_nrvn',
+    'sph_cyl': 'eye_exam_sph_cyl',
+    'axis': 'eye_exam_axis',
+    'nct': 'eye_exam_nct',
+    'sac': 'eye_exam_sac',
+    'lid': 'eye_exam_lid',
+    'conj': 'eye_exam_conj',
+    'cornea': 'eye_exam_cornea',
+    'ac': 'eye_exam_ac',
+    'iris': 'eye_exam_iris',
+    'pupil': 'eye_exam_pupil',
+    'lens': 'eye_exam_lens',
+    'em': 'eye_exam_em',
+    'covertest': 'eye_exam_covertest',
+    'disc': 'eye_exam_disc',
+    'fr': 'eye_exam_fr',
+  };
+
+  List<_MasterItem> _visibleEyeItems(List<_MasterItem> items) {
+    final p = PermissionService.instance;
+    return items.where((item) {
+      final feature = _eyeFeatureBySlug[item.slug];
+      return feature != null && p.canFeature('master', feature);
+    }).toList();
+  }
+
   List<_MasterSection> _visibleSections() {
     final p = PermissionService.instance;
+    // Any CRUD verb per feature — matches web BasicMasterController::landing.
     final basicVisible = <_MasterItem>[
-      if (p.can(Perm.masterCaseTypes)) _basic[0],
-      if (p.can(Perm.masterLocations)) _basic[1],
-      if (p.can(Perm.masterCaseTypes) || p.can(Perm.masterLocations)) _basic[2],
-      if (p.can(Perm.masterCaseTypes) || p.can(Perm.masterLocations)) _basic[3],
+      if (p.canFeature('master', 'casetype')) _basic[0],
+      if (p.canFeature('master', 'location')) _basic[1],
+      if (p.canFeature('master', 'referrer')) _basic[2],
+      if (p.canFeature('master', 'duration')) _basic[3],
     ];
     final otVisible = <_MasterItem>[
-      if (p.isSuper || p.can(Perm.masterOtSlots) || p.can(Perm.masterOtTypes) || p.can(Perm.masterOtCharges) || p.can(Perm.masterOtInventory)) _ot[0],
-      if (p.can(Perm.masterOtSlots)) _ot[1],
-      if (p.can(Perm.masterOtTypes)) _ot[2],
-      if (p.can(Perm.masterOtTypes)) _ot[3],
-      if (p.can(Perm.masterOtCharges)) _ot[4],
-      if (p.can(Perm.masterOtInventory)) _ot[5],
-      if (p.can(Perm.masterOtInventory)) _ot[6],
-      if (p.can(Perm.masterOtInventory)) _ot[7],
+      if (p.canFeature('master', 'ot_lens_option')) _ot[0],
+      if (p.canFeature('master', 'ot_slot')) _ot[1],
+      if (p.canFeature('master', 'ot_type')) _ot[2],
+      if (p.canFeature('master', 'ot_surgery_type')) _ot[3],
+      if (p.canFeature('master', 'ot_charge')) _ot[4],
+      if (p.canFeature('master', 'ot_inventory')) _ot[5],
+      if (p.canFeature('master', 'ot_lens_power')) _ot[6],
+      if (p.canFeature('master', 'ot_package_master')) _ot[7],
     ];
-    final showEyeExam = p.can(Perm.masterEyeExam);
+    final clinicalVisible = _visibleEyeItems(_clinical);
+    final visionVisible = _visibleEyeItems(_vision);
+    final anteriorVisible = _visibleEyeItems(_anterior);
+    final posteriorVisible = _visibleEyeItems(_posterior);
+
+    if (widget.eyeExamOnly) {
+      final showEyeExam = clinicalVisible.isNotEmpty || anteriorVisible.isNotEmpty || posteriorVisible.isNotEmpty;
+      return [
+        if (showEyeExam)
+          _MasterSection('Eye Exam Masters', Icons.remove_red_eye_rounded, AppColors.teal, [
+            _MasterGroup('Clinical', clinicalVisible),
+            _MasterGroup('Anterior Segment (O/E)', anteriorVisible),
+            _MasterGroup('Posterior Segment (Fundus)', posteriorVisible),
+          ]),
+      ].where((s) => s.itemCount > 0).toList();
+    }
+
+    final showEyeExam = clinicalVisible.isNotEmpty ||
+        visionVisible.isNotEmpty ||
+        anteriorVisible.isNotEmpty ||
+        posteriorVisible.isNotEmpty;
     return [
       _MasterSection('Basic Masters', Icons.grid_3x3_rounded, AppColors.primary, [_MasterGroup('', basicVisible)]),
       _MasterSection('OT Masters', Icons.local_hospital_rounded, AppColors.purple, [_MasterGroup('', otVisible)]),
       if (showEyeExam)
         _MasterSection('Eye Exam Masters', Icons.remove_red_eye_rounded, AppColors.teal, [
-          _MasterGroup('Clinical', _clinical),
-          _MasterGroup('Vision Values', _vision),
-          _MasterGroup('Anterior Segment (O/E)', _anterior),
-          _MasterGroup('Posterior Segment (Fundus)', _posterior),
+          _MasterGroup('Clinical', clinicalVisible),
+          _MasterGroup('Vision Values', visionVisible),
+          _MasterGroup('Anterior Segment (O/E)', anteriorVisible),
+          _MasterGroup('Posterior Segment (Fundus)', posteriorVisible),
         ]),
     ].where((s) => s.itemCount > 0).toList();
   }
@@ -147,6 +221,13 @@ class _MastersScreenState extends State<MastersScreen> {
   @override
   Widget build(BuildContext context) {
     final sections = _visibleSections();
+    // A live permission refresh can hide the master that is open in the
+    // detail pane — drop it instead of leaving its editor reachable.
+    final selected = _selected;
+    if (selected != null &&
+        !sections.any((s) => s.subGroups.any((g) => g.items.any((i) => i.label == selected.label)))) {
+      _selected = null;
+    }
     if (sections.isEmpty) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
@@ -243,17 +324,8 @@ class _MastersScreenState extends State<MastersScreen> {
     );
   }
 
-  // 2-column icon-button grid — mirrors eye_care_app's _Grid/_Card (icon
-  // badge on top, label below), sized for the narrower list pane.
   Widget _itemGrid(List<_MasterItem> items) {
-    return LayoutBuilder(builder: (_, c) {
-      final w = (c.maxWidth - 10) / 2;
-      return Wrap(
-        spacing: 10,
-        runSpacing: 10,
-        children: [for (final item in items) SizedBox(width: w, child: _tile(item))],
-      );
-    });
+    return AutoFitTileGrid(tileWidth: 112, spacing: 8, runSpacing: 8, children: [for (final item in items) _tile(item)]);
   }
 
   Widget _tile(_MasterItem item) {
@@ -271,22 +343,20 @@ class _MastersScreenState extends State<MastersScreen> {
             border: Border.all(color: active ? c.withValues(alpha: 0.35) : c.withValues(alpha: 0.14), width: active ? 1.5 : 1),
             boxShadow: [BoxShadow(color: c.withValues(alpha: 0.08), blurRadius: 10, offset: const Offset(0, 3))],
           ),
-          padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 6),
+          padding: const EdgeInsets.fromLTRB(6, 8, 6, 8),
           child: Column(mainAxisSize: MainAxisSize.min, children: [
             Container(
-              width: 38,
-              height: 38,
+              width: 28,
+              height: 28,
               decoration: BoxDecoration(
                 gradient: LinearGradient(colors: [c.withValues(alpha: active ? 0.90 : 0.14), c.withValues(alpha: active ? 0.65 : 0.04)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-                borderRadius: BorderRadius.circular(AppRadius.md),
+                borderRadius: BorderRadius.circular(AppRadius.sm),
                 border: Border.all(color: c.withValues(alpha: 0.18)),
               ),
-              child: Icon(item.icon, color: active ? Colors.white : c, size: 18),
+              child: Icon(item.icon, color: active ? Colors.white : c, size: 15),
             ),
-            const SizedBox(height: 7),
-            Text(item.label, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: active ? FontWeight.w800 : FontWeight.w700, color: active ? c : AppColors.darkNavy, height: 1.25)),
-            const SizedBox(height: 3),
-            Icon(Icons.chevron_right_rounded, size: 12, color: c.withValues(alpha: active ? 0.55 : 0.35)),
+            const SizedBox(height: 5),
+            Text(item.label, textAlign: TextAlign.center, maxLines: 2, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, fontWeight: active ? FontWeight.w800 : FontWeight.w700, color: active ? c : AppColors.darkNavy, height: 1.2)),
           ]),
         ),
       ),
@@ -334,12 +404,26 @@ class _MastersScreenState extends State<MastersScreen> {
         return OtPackageMasterScreen(key: ValueKey(item.slug), accentColor: item.color);
       case 'locations':
         return LocationMasterScreen(key: ValueKey(item.slug), accentColor: item.color);
+      case 'durations':
+        return DurationMasterScreen(key: ValueKey(item.slug), accentColor: item.color);
       default:
-        // Durations falls through here too — treated as a plain
-        // masters/detail/{slug} generic master, same as every other simple
-        // {value, favourite} type. Lens Options / OT Types now have their
-        // own correctly-permissioned screens above (Round 3.5).
-        return GenericMasterScreen(key: ValueKey(item.slug), title: item.label, apiPath: 'masters/detail/${item.slug}', accentColor: item.color, icon: item.icon, hasFavourite: item.hasFavourite, hasSeeded: item.hasSeeded);
+        final feature = _eyeFeatureBySlug[item.slug];
+        return GenericMasterScreen(
+          key: ValueKey(item.slug),
+          title: item.label,
+          apiPath: 'masters/detail/${item.slug}',
+          accentColor: item.color,
+          icon: item.icon,
+          hasFavourite: item.hasFavourite,
+          hasSeeded: item.hasSeeded,
+          isAdvice: item.slug == 'advices',
+          canAdd: feature != null &&
+              PermissionService.instance.can('${feature}_add'),
+          canEdit: feature != null &&
+              PermissionService.instance.can('${feature}_edit'),
+          canDelete: feature != null &&
+              PermissionService.instance.can('${feature}_delete'),
+        );
     }
   }
 }

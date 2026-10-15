@@ -76,6 +76,7 @@ class ExamService with AuthenticatedService {
       _fetchList('medicine-routes'),
       ExamMastersService.instance.fetchAll(),
       fetchMedGroups(),
+      fetchAllMedicines(),
     ]);
 
     return ExamFormData(
@@ -87,13 +88,38 @@ class ExamService with AuthenticatedService {
           .toList(),
       masters: results[2] as ExamMastersData,
       medGroups: results[3] as List<MedGroup>,
+      medicines: results[4] as List<MedItem>,
     );
+  }
+
+  /// The full Medicine Master list, preloaded once — matches web exactly
+  /// (`Examination\SecondaryExamController::loadMasters()` passes the
+  /// entire, unfiltered `Medicine::where('tenant_id', ...)->get()` list into
+  /// the page as `$medicinesForJs`, and the Rx "Medicine Name" field filters
+  /// it client-side with no server round-trip per keystroke). The app used
+  /// to call a live per-keystroke search endpoint instead, which only
+  /// worked once 2+ characters were typed and never showed anything on a
+  /// plain click/focus — unlike every other exam autocomplete field
+  /// (Complaint/K-C-O/Diagnosis/History), which already show their full
+  /// list immediately on focus. `per_page: 500` mirrors the same
+  /// "effectively unpaginated" approach [fetchMedGroups] already uses.
+  Future<List<MedItem>> fetchAllMedicines() async {
+    try {
+      final uri = Uri.parse('${AppConfig.hospitalApiUrl}/medicines')
+          .replace(queryParameters: {'per_page': '500'});
+      final resp = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
+      final body = _parseBody(resp);
+      final list = body['data'] as List? ?? [];
+      return list.map((e) => MedItem.fromJson(e as Map<String, dynamic>)).toList();
+    } catch (_) {
+      return [];
+    }
   }
 
   Future<List<MedGroup>> fetchMedGroups() async {
     try {
       final uri = Uri.parse('${AppConfig.hospitalApiUrl}/medicine-groups')
-          .replace(queryParameters: {'per_page': '200'});
+          .replace(queryParameters: {'per_page': '200', 'scope': 'opd'});
       final resp = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
       final body = _parseBody(resp);
       final list = body['data'] as List? ?? [];
@@ -112,21 +138,6 @@ class ExamService with AuthenticatedService {
     return body['data'] as List? ?? [];
   }
 
-  // ── Medicine search ───────────────────────────────────────────────────────────
-
-  Future<List<MedItem>> searchMedicines(String query) async {
-    if (query.isEmpty) return [];
-    final uri = Uri.parse('${AppConfig.hospitalApiUrl}/medicines')
-        .replace(queryParameters: {'search': query, 'per_page': '20'});
-    final resp = await http
-        .get(uri, headers: await headers)
-        .timeout(AppConfig.requestTimeout);
-    final body = _parseBody(resp);
-    final list = body['data'] as List? ?? [];
-    return list
-        .map((e) => MedItem.fromJson(e as Map<String, dynamic>))
-        .toList();
-  }
 }
 
 class ExamFormData {
@@ -134,11 +145,13 @@ class ExamFormData {
   final List<MedMasterItem> routes;
   final ExamMastersData masters;
   final List<MedGroup> medGroups;
+  final List<MedItem> medicines;
 
   const ExamFormData({
     required this.dosages,
     required this.routes,
     required this.masters,
     this.medGroups = const [],
+    this.medicines = const [],
   });
 }

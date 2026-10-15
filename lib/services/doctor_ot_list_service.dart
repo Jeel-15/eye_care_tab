@@ -19,12 +19,14 @@ class DoctorOtListService with AuthenticatedService {
     String? startDate,
     String? endDate,
     int? doctorId,
+    bool consultOnly = false,
     int page = 1,
     int perPage = 25,
   }) async {
     final params = <String, String>{'page': '$page', 'per_page': '$perPage'};
-    if (startDate != null) params['start_date'] = startDate;
-    if (endDate != null) params['end_date'] = endDate;
+    if (consultOnly) params['queue'] = 'consult';
+    if (!consultOnly && startDate != null) params['start_date'] = startDate;
+    if (!consultOnly && endDate != null) params['end_date'] = endDate;
     if (doctorId != null) params['doctor_id'] = '$doctorId';
     final uri = Uri.parse('$_base/dashboard/doctor-ot').replace(queryParameters: params);
     final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
@@ -34,6 +36,28 @@ class DoctorOtListService with AuthenticatedService {
     final meta = body['meta'] as Map<String, dynamic>? ?? {};
     final otAssistants = (meta['ot_assistants'] as List? ?? []).map((e) => OtNamedRef.fromJson(e as Map<String, dynamic>)).toList();
     return (items: items, meta: OtPaginationMeta.fromJson(data), otAssistants: otAssistants);
+  }
+
+  /// Doctor dashboard "OT Patients" — counselling through OT Assistant.
+  /// Omitting dates lets the server use the hospital's today.
+  Future<({List<OtBookingSummary> items, String startDate, String endDate})> fetchDesk({
+    String? startDate,
+    String? endDate,
+  }) async {
+    final params = <String, String>{};
+    if (startDate != null) params['start_date'] = startDate;
+    if (endDate != null) params['end_date'] = endDate;
+    final uri = Uri.parse('$_base/dashboard/ot-patients').replace(queryParameters: params.isEmpty ? null : params);
+    final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
+    final body = _parse(res);
+    final raw = body['data'];
+    final list = raw is List ? raw : const [];
+    final meta = body['meta'] as Map<String, dynamic>? ?? {};
+    return (
+      items: list.map((e) => OtBookingSummary.fromJson(e as Map<String, dynamic>)).toList(),
+      startDate: meta['start_date'] as String? ?? '',
+      endDate: meta['end_date'] as String? ?? '',
+    );
   }
 
   /// "Doctor agrees OT after consult" — assigns an OT Assistant and marks

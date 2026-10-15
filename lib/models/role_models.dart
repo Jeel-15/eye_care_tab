@@ -31,6 +31,91 @@ class RolePermissionItem {
       );
 }
 
+/// One feature row inside a module (e.g. module "opd" → feature "patient").
+/// The pre-rewrite backend shape has no feature grouping at all — for that
+/// shape every permission in a module is placed under a single synthetic
+/// feature with an empty label (see [PermissionModuleGroup.fromFlatList]).
+class PermissionFeatureGroup {
+  final String label;
+  final List<RolePermissionItem> permissions;
+
+  const PermissionFeatureGroup({required this.label, required this.permissions});
+
+  factory PermissionFeatureGroup.fromJson(Map<String, dynamic> j) =>
+      PermissionFeatureGroup(
+        label: j['label'] as String? ?? '',
+        permissions: (j['permissions'] as List? ?? [])
+            .map((e) => RolePermissionItem.fromJson(e as Map<String, dynamic>))
+            .toList(),
+      );
+}
+
+/// One module row (e.g. "opd", "ot", "master"), grouping its features.
+///
+/// Two backend shapes are known to occur and both are handled here:
+///  - New (post role/permission rewrite): `module => {label, features: {...}}`.
+///  - Old (pre-rewrite; still returned by `RoleApiController::permissions()`
+///    until that endpoint is migrated): `module => [permission, ...]` — a
+///    flat list with no feature grouping.
+class PermissionModuleGroup {
+  final String label;
+  final Map<String, PermissionFeatureGroup> features;
+
+  const PermissionModuleGroup({required this.label, required this.features});
+
+  factory PermissionModuleGroup.fromJson(Map<String, dynamic> j) =>
+      PermissionModuleGroup(
+        label: j['label'] as String? ?? '',
+        features: {
+          for (final e
+              in (j['features'] as Map<String, dynamic>? ?? {}).entries)
+            e.key: PermissionFeatureGroup.fromJson(e.value as Map<String, dynamic>),
+        },
+      );
+
+  static const _legacyModuleLabels = {
+    'opd': 'OPD',
+    'ot': 'OT (Operation Theatre)',
+    'master': 'Masters',
+    'settings': 'Settings',
+    'setting': 'Settings',
+    'reports': 'Reports',
+    'report': 'Reports',
+    'dashboard': 'Dashboard',
+  };
+
+  factory PermissionModuleGroup.fromFlatList(String moduleKey, List list) {
+    final perms = list
+        .map((e) => RolePermissionItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+    final label = _legacyModuleLabels[moduleKey] ??
+        (moduleKey.isEmpty
+            ? moduleKey
+            : moduleKey[0].toUpperCase() + moduleKey.substring(1));
+    return PermissionModuleGroup(
+      label: label,
+      features: {'_all': PermissionFeatureGroup(label: '', permissions: perms)},
+    );
+  }
+
+  List<RolePermissionItem> get allPermissions =>
+      features.values.expand((f) => f.permissions).toList();
+}
+
+Map<String, PermissionModuleGroup> _parseModuleTree(dynamic raw) {
+  if (raw is! Map<String, dynamic>) return {};
+  final result = <String, PermissionModuleGroup>{};
+  for (final e in raw.entries) {
+    final value = e.value;
+    if (value is List) {
+      result[e.key] = PermissionModuleGroup.fromFlatList(e.key, value);
+    } else if (value is Map<String, dynamic>) {
+      result[e.key] = PermissionModuleGroup.fromJson(value);
+    }
+  }
+  return result;
+}
+
 class RoleModel {
   final int id;
   final String name;
@@ -42,7 +127,7 @@ class RoleModel {
   final int usersCount;
   final bool isDeletable;
   // Only populated when fetching single role (show endpoint)
-  final Map<String, List<RolePermissionItem>> permissions;
+  final Map<String, PermissionModuleGroup> permissions;
 
   const RoleModel({
     required this.id,
@@ -58,16 +143,6 @@ class RoleModel {
   });
 
   factory RoleModel.fromJson(Map<String, dynamic> j) {
-    final permsRaw = j['permissions'] as Map<String, dynamic>?;
-    final perms = <String, List<RolePermissionItem>>{};
-    if (permsRaw != null) {
-      for (final entry in permsRaw.entries) {
-        perms[entry.key] = (entry.value as List)
-            .map((e) =>
-                RolePermissionItem.fromJson(e as Map<String, dynamic>))
-            .toList();
-      }
-    }
     return RoleModel(
       id: j['id'] as int? ?? 0,
       name: j['name'] as String? ?? '',
@@ -78,25 +153,17 @@ class RoleModel {
       isSuper: j['is_super'] == true,
       usersCount: j['users_count'] as int? ?? 0,
       isDeletable: j['is_deletable'] == true,
-      permissions: perms,
+      permissions: _parseModuleTree(j['permissions']),
     );
   }
 }
 
 class AllPermissionsResult {
-  final Map<String, List<RolePermissionItem>> modules;
+  final Map<String, PermissionModuleGroup> modules;
 
   const AllPermissionsResult({required this.modules});
 
   factory AllPermissionsResult.fromJson(Map<String, dynamic> j) {
-    final data = j['data'] as Map<String, dynamic>? ?? {};
-    final modules = <String, List<RolePermissionItem>>{};
-    for (final entry in data.entries) {
-      modules[entry.key] = (entry.value as List)
-          .map((e) =>
-              RolePermissionItem.fromJson(e as Map<String, dynamic>))
-          .toList();
-    }
-    return AllPermissionsResult(modules: modules);
+    return AllPermissionsResult(modules: _parseModuleTree(j['data']));
   }
 }

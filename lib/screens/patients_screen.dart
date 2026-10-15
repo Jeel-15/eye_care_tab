@@ -5,15 +5,23 @@ import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
 import '../models/auth_models.dart';
 import '../models/patient_models.dart';
+import '../services/base_service.dart' show PermissionDeniedException;
 import '../services/exam_masters_service.dart';
 import '../services/patient_service.dart';
 import '../services/permission_service.dart';
 import '../utils/app_route.dart';
+import '../utils/date_format.dart';
 import '../utils/refreshable.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/app_dialog.dart';
+import '../widgets/app_refresh_indicator.dart';
+import '../widgets/detail_card_kit.dart';
 import '../widgets/exam/dilation_lock.dart';
+import '../widgets/form_kit.dart';
+import '../widgets/scaled_data_table.dart';
+import '../widgets/table_row_action.dart';
+import '../widgets/segmented_pill_toggle.dart';
 import '../widgets/skeleton.dart';
-import '../widgets/split_pane_scaffold.dart';
 import 'opd_bill_screen.dart';
 import 'patient_checkin_screen.dart';
 import 'patient_form_screen.dart';
@@ -21,15 +29,21 @@ import 'patient_history_screen.dart';
 import 'primary_exam_screen.dart';
 import 'secondary_exam_screen.dart';
 
-/// Tablet Patients module — Pattern A (list + detail split). Left pane:
-/// search, stat cards, paginated list. Right pane: selected patient detail,
-/// or the add/edit form (Pattern C) when in edit mode. Business logic
-/// (fetch/cache/search/paginate) ported from
-/// eye_care_app/lib/screens/patients_screen.dart.
+/// Tablet Patients module — web parity redesign (2026-09-18): a single
+/// full-width data table (# / MRD / Patient / Doctor / Fee-Type / Status /
+/// Actions), matching `resources/views/hospital/patients/index.blade.php`
+/// + its `partials/table.blade.php` exactly. Web's Patients page has never
+/// been a list+detail split — it's one real (DataTables-powered) table,
+/// with a permission-free "View" action opening a modal for full detail
+/// and the rest of the actions (Primary/Secondary Exam, History, Print,
+/// Edit, Check-in) as inline row icons, same permission keys as before.
 ///
-/// Check-in, Print and Exam actions are stubbed pending later phases (see
-/// EYE_CARE_TAB_PRD.md §8) — Patient History is stubbed pending its own
-/// follow-up within Phase 3.
+/// Business logic (fetch/cache/search/paginate/add/edit/history/checkin/
+/// print/exam, including the dilation double-tap-override lock) is
+/// unchanged from the previous split-pane version — only the presentation
+/// moved from a side detail-pane to per-row action icons + dialogs; the
+/// Add/Edit forms open through `showPaneDialog`, the same host every other
+/// form pane in the app uses.
 class PatientsScreen extends StatefulWidget {
   final UserInfo user;
   final HospitalInfo hospital;
@@ -39,8 +53,6 @@ class PatientsScreen extends StatefulWidget {
   @override
   State<PatientsScreen> createState() => _PatientsScreenState();
 }
-
-enum _PaneMode { view, addWalkIn, addPhone, edit, history }
 
 class _PatientsScreenState extends State<PatientsScreen> implements Refreshable {
   bool _showAll = false;
@@ -55,9 +67,6 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
   bool _refreshing = false;
   String? _error;
   int _currentPage = 1;
-
-  int? _selectedId;
-  _PaneMode _paneMode = _PaneMode.view;
 
   @override
   void initState() {
@@ -78,10 +87,16 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
   @override
   Future<void> refreshSilently() => _goToPage(_currentPage);
 
+  String get _cacheScope => PatientService.scopeFor(
+        hospitalSlug: widget.hospital.slug,
+        userId: widget.user.id,
+      );
+
   Future<void> _goToPage(int page) async {
     if (_isLoading) return;
     if (page == 1 && _patients.isEmpty && _search.isEmpty) {
-      final cached = await PatientService.instance.getCachedPatients(showAll: _showAll);
+      final cached = await PatientService.instance
+          .getCachedPatients(showAll: _showAll, scope: _cacheScope);
       if (cached != null && mounted) {
         setState(() {
           _patients = cached.patients;
@@ -98,13 +113,30 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
       _currentPage = page;
     });
     try {
-      final result = await PatientService.instance.fetchPatients(showAll: _showAll, search: _search, page: page);
+      final result = await PatientService.instance.fetchPatients(
+        showAll: _showAll,
+        search: _search,
+        page: page,
+        scope: _cacheScope,
+      );
       if (!mounted) return;
       setState(() {
         _patients = result.patients;
         _stats = result.stats;
         _meta = result.meta;
       });
+    } on PermissionDeniedException catch (e) {
+      // A definitive "you're not allowed" answer must never be masked by
+      // whatever stale cached list step above already rendered.
+      // See ROLES_PERMISSIONS_DEEP_AUDIT_ROUND2.md Part B.
+      if (mounted) {
+        setState(() {
+          _patients = [];
+          _stats = null;
+          _meta = null;
+          _error = e.toString();
+        });
+      }
     } catch (e) {
       if (mounted && _patients.isEmpty) setState(() => _error = e.toString());
     } finally {
@@ -138,35 +170,125 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
     });
   }
 
-  void _selectPatient(Patient p) {
-    setState(() {
-      _selectedId = p.id;
-      _paneMode = _PaneMode.view;
-    });
-  }
+  // ── Dialog-based actions (replace the old embedded side-panel modes) ────
 
-  void _openAdd(_PaneMode mode) => setState(() => _paneMode = mode);
-
-  void _openEdit(Patient p) => setState(() {
-        _selectedId = p.id;
-        _paneMode = _PaneMode.edit;
-      });
-
-  void _onFormSaved(Patient saved) {
-    setState(() {
-      _paneMode = _PaneMode.view;
-      _selectedId = saved.id;
-    });
-    _goToPage(_currentPage);
+  void _afterSave() {
+    // A role can be granted patient_register/patient_register_phone without
+    // patient_view (e.g. a walk-in-desk-only role) — the save already
+    // succeeded, but refreshing the list would hit a 403 on patient_view.
+    // Skip the refresh entirely when the user can't view the list anyway.
+    if (PermissionService.instance.can(Perm.opdPatientView)) {
+      _goToPage(_currentPage);
+    }
     showAppSnackBar(context, 'Saved.', isSuccess: true);
   }
 
-  void _cancelForm() => setState(() => _paneMode = _PaneMode.view);
+  Future<void> _openAddDialog(PatientFormMode mode) async {
+    await showPaneDialog<void>(
+      context,
+      builder: (dCtx) => PatientFormScreen(
+        key: ValueKey('patient_form_${mode.name}'),
+        mode: mode,
+        user: widget.user,
+        hospital: widget.hospital,
+        onSaved: (saved) {
+          Navigator.pop(dCtx);
+          _afterSave();
+        },
+        onCancel: () => Navigator.pop(dCtx),
+      ),
+    );
+  }
 
-  void _openHistory(Patient p) => setState(() {
-        _selectedId = p.id;
-        _paneMode = _PaneMode.history;
-      });
+  Future<void> _openEditDialog(Patient p) async {
+    await showPaneDialog<void>(
+      context,
+      builder: (dCtx) => PatientFormScreen(
+        key: ValueKey('patient_form_edit_${p.id}'),
+        mode: PatientFormMode.edit,
+        patient: p,
+        user: widget.user,
+        hospital: widget.hospital,
+        onSaved: (saved) {
+          Navigator.pop(dCtx);
+          _afterSave();
+        },
+        onCancel: () => Navigator.pop(dCtx),
+      ),
+    );
+  }
+
+  // showGeneralDialog (not the plain showDialog every other dialog on this
+  // screen uses) so this one specific dialog can get a gentler custom
+  // transition — a slight upward slide + fade instead of the default
+  // Material dialog's fade+scale-from-center "pop". Built from Flutter's
+  // own FadeTransition/SlideTransition, no extra package. Left as the lone
+  // exception for now (see PATIENT_HISTORY_MODAL_UX_PLAN.md) — once this
+  // reads well the same treatment can be normalized onto
+  // _openViewDialog/_openEditDialog/_openAddDialog too.
+  Future<void> _openHistoryDialog(Patient p) async {
+    // Client report (2026-10-07): the fixed 900 cap squeezed the exam
+    // clinical-data view's new two-column layout into ~430px columns —
+    // cramped tables that read as "everything shrunk" next to how the same
+    // data shows inside the actual exam screens. Scales with the screen
+    // instead (capped generously) so wide tablets get real room.
+    final screen = MediaQuery.sizeOf(context);
+    final dialogMaxWidth = (screen.width * 0.92).clamp(900.0, 1280.0);
+    final dialogMaxHeight = (screen.height * 0.9).clamp(760.0, 860.0);
+    await showGeneralDialog<void>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: MaterialLocalizations.of(context).modalBarrierDismissLabel,
+      barrierColor: Colors.black54,
+      transitionDuration: const Duration(milliseconds: 260),
+      pageBuilder: (dCtx, anim, secAnim) => Dialog(
+        backgroundColor: Colors.white,
+        surfaceTintColor: Colors.transparent,
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
+        child: ConstrainedBox(
+          constraints: BoxConstraints(maxWidth: dialogMaxWidth, maxHeight: dialogMaxHeight),
+          child: Padding(
+            padding: const EdgeInsets.all(20),
+            child: PatientHistoryScreen(
+              user: widget.user,
+              hospital: widget.hospital,
+              patient: p,
+              onBack: () => Navigator.pop(dCtx),
+              onNotReady: _notReady,
+            ),
+          ),
+        ),
+      ),
+      transitionBuilder: (dCtx, anim, secAnim, child) {
+        final curved = CurvedAnimation(parent: anim, curve: Curves.easeOutCubic);
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(begin: const Offset(0, 0.05), end: Offset.zero).animate(curved),
+            child: child,
+          ),
+        );
+      },
+    );
+  }
+
+  Future<void> _openViewDialog(Patient p) async {
+    await showDialog<void>(
+      context: context,
+      builder: (dCtx) => _PatientDetailView(
+        patient: p,
+        currencySymbol: widget.hospital.currencySymbol,
+        onClose: () => Navigator.pop(dCtx),
+        onEdit: () { Navigator.pop(dCtx); _openEditDialog(p); },
+        onHistory: () { Navigator.pop(dCtx); _openHistoryDialog(p); },
+        onCheckin: () { Navigator.pop(dCtx); _openCheckin(p); },
+        onPrimaryExam: () { Navigator.pop(dCtx); _openPrimaryExam(p); },
+        onSecondaryExam: () { Navigator.pop(dCtx); _openSecondaryExam(p); },
+        onPrintBill: () { Navigator.pop(dCtx); _openPrintBill(p); },
+        onNotReady: _notReady,
+      ),
+    );
+  }
 
   Future<void> _openCheckin(Patient p) async {
     await showDialog<void>(
@@ -189,31 +311,6 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
     Navigator.of(context, rootNavigator: true).push(appRoute(OpdBillScreen(user: widget.user, hospital: widget.hospital, patient: p)));
   }
 
-  Future<void> _deletePatient(Patient p) async {
-    final confirm = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('Delete Patient?'),
-        content: Text('Delete ${p.fullName}? This cannot be undone.'),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          TextButton(onPressed: () => Navigator.pop(ctx, true), style: TextButton.styleFrom(foregroundColor: AppColors.red), child: const Text('Delete')),
-        ],
-      ),
-    );
-    if (confirm != true || !mounted) return;
-    try {
-      await PatientService.instance.deletePatient(p.id);
-      if (mounted) {
-        showAppSnackBar(context, 'Patient deleted.', isSuccess: true);
-        if (_selectedId == p.id) setState(() => _selectedId = null);
-        _goToPage(_currentPage);
-      }
-    } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString(), isError: true);
-    }
-  }
-
   void _notReady(String label) => showAppSnackBar(context, '$label — not built yet', duration: const Duration(seconds: 2));
 
   Future<void> _openPrimaryExam(Patient p) async {
@@ -223,89 +320,75 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
     if (result == true && mounted) _goToPage(_currentPage);
   }
 
+  // Only called once the caller already knows it's safe: either the patient
+  // was never locked, or the countdown chip's own double-tap confirmation
+  // already ran. No dialog here — matches web's plain (non-locked)
+  // "Examine" link.
   Future<void> _openSecondaryExam(Patient p) async {
-    final ok = await canStartSecondaryExam(context, p.unlockTimeMs);
-    if (!ok || !mounted) return;
     final result = await Navigator.of(context, rootNavigator: true).push<bool>(
       appRoute(SecondaryExamScreen(user: widget.user, hospital: widget.hospital, patient: p)),
     );
     if (result == true && mounted) _goToPage(_currentPage);
   }
 
+  // ── Build ────────────────────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
-    return SplitPaneScaffold(
-      showDetail: _selectedId != null || _paneMode != _PaneMode.view,
-      onBack: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }),
-      listPane: _buildListPane(),
-      detailPane: _buildDetailPane(),
-      listPaneWidth: 400,
-    );
-  }
-
-  // ── List pane ────────────────────────────────────────────────────────
-
-  Widget _buildListPane() {
-    final p = PermissionService.instance;
+    final perm = PermissionService.instance;
     return Container(
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
       clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Row(children: [
-              Text('Patients', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.primary)),
-              const Spacer(),
-              IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _isLoading ? null : () => _goToPage(_currentPage)),
-              if (p.can(Perm.opdPatientRegister))
-                IconButton(icon: Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary, size: 20), tooltip: 'New Walk-in', onPressed: () => _openAdd(_PaneMode.addWalkIn)),
-              if (p.can(Perm.opdPatientRegisterPhone))
-                IconButton(icon: Icon(Icons.phone_in_talk_rounded, color: AppColors.primary, size: 20), tooltip: 'Phone Appointment', onPressed: () => _openAdd(_PaneMode.addPhone)),
-            ]),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: _segmentedToggle(),
-          ),
-          const SizedBox(height: 10),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _buildStatCards()),
-          const SizedBox(height: 10),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _buildSearchBar()),
-          const SizedBox(height: 6),
-          if (_refreshing) LinearProgressIndicator(minHeight: 2, backgroundColor: Colors.transparent, color: AppColors.primary),
-          Expanded(child: _buildList()),
-          if (_meta != null) _buildPaginationBar(),
-        ],
-      ),
-    );
-  }
-
-  Widget _segmentedToggle() {
-    return Container(
-      padding: const EdgeInsets.all(3),
-      decoration: BoxDecoration(color: AppColors.background, borderRadius: BorderRadius.circular(AppRadius.md)),
-      child: Row(children: [
-        Expanded(child: _segBtn('Today', !_showAll, () => _toggleShowAll(false))),
-        Expanded(child: _segBtn('All Patients', _showAll, () => _toggleShowAll(true))),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        _buildHeader(perm),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 12), child: _buildStatCards()),
+        Padding(padding: const EdgeInsets.fromLTRB(16, 0, 16, 12), child: _buildSearchBar()),
+        if (_refreshing) LinearProgressIndicator(minHeight: 2, backgroundColor: Colors.transparent, color: AppColors.primary),
+        Expanded(child: _buildTableArea()),
+        if (_meta != null) _buildPaginationBar(),
       ]),
     );
   }
 
-  Widget _segBtn(String label, bool active, VoidCallback onTap) {
-    return PressScaleWrapper(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(vertical: 8),
-        decoration: BoxDecoration(color: active ? AppColors.primary : Colors.transparent, borderRadius: BorderRadius.circular(AppRadius.sm)),
-        alignment: Alignment.center,
-        child: Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: active ? Colors.white : AppColors.textSecondary)),
-      ),
+  Widget _buildHeader(PermissionService perm) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
+      child: Row(children: [
+        Icon(Icons.people_alt_rounded, color: AppColors.primary, size: 20),
+        const SizedBox(width: 8),
+        Text(_showAll ? 'All Patients' : "Today's Patients", style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.primary)),
+        const SizedBox(width: 16),
+        SegmentedPillToggle<bool>(
+          options: const [(value: false, label: 'Today'), (value: true, label: 'All Patients')],
+          selected: _showAll,
+          onChanged: _toggleShowAll,
+        ),
+        const Spacer(),
+        IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _isLoading ? null : () => _goToPage(_currentPage)),
+        if (perm.can(Perm.opdPatientRegister)) ...[
+          OutlinedButton.icon(
+            onPressed: () => _openAddDialog(PatientFormMode.addWalkIn),
+            icon: const Icon(Icons.person_add_alt_1_rounded, size: 16),
+            label: const Text('Walk-in'),
+            style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA22)),
+          ),
+          const SizedBox(width: 8),
+        ],
+        if (perm.can(Perm.opdPatientRegisterPhone))
+          OutlinedButton.icon(
+            onPressed: () => _openAddDialog(PatientFormMode.addPhone),
+            icon: const Icon(Icons.phone_in_talk_rounded, size: 16),
+            label: const Text('Phone Appt'),
+            style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA22)),
+          ),
+      ]),
     );
   }
 
+  // Web parity: `patients-stats-wrap` has 4 cards (Total Patients / Waiting
+  // / Primary Done / Completed) — the previous version here only had 3
+  // (missing Primary Done, even though `PatientStats.primaryDone` was
+  // already parsed and available).
   Widget _buildStatCards() {
     final s = _stats;
     return Row(children: [
@@ -313,7 +396,9 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
       const SizedBox(width: 8),
       Expanded(child: _statChip('Waiting', s?.waiting ?? 0, AppColors.orange)),
       const SizedBox(width: 8),
-      Expanded(child: _statChip('Done', s?.completed ?? 0, AppColors.green)),
+      Expanded(child: _statChip('Primary Done', s?.primaryDone ?? 0, AppColors.blue)),
+      const SizedBox(width: 8),
+      Expanded(child: _statChip('Completed', s?.completed ?? 0, AppColors.green)),
     ]);
   }
 
@@ -323,7 +408,7 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
       decoration: BoxDecoration(color: color.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(AppRadius.sm)),
       child: Column(children: [
         Text('$value', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: color)),
-        Text(label, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: color.withValues(alpha: 0.8))),
+        Text(label, textAlign: TextAlign.center, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: color.withValues(alpha: 0.8))),
       ]),
     );
   }
@@ -352,7 +437,53 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
     );
   }
 
-  Widget _buildList() {
+  Widget _buildPaginationBar() {
+    final meta = _meta!;
+    final lastPage = meta.lastPage;
+    if (lastPage <= 1) return const SizedBox(height: 8);
+    return Container(
+      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
+      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppColors.primaryA08))),
+      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+        IconButton(icon: const Icon(Icons.chevron_left_rounded), iconSize: 20, onPressed: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null),
+        Text('Page $_currentPage / $lastPage', style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+        IconButton(icon: const Icon(Icons.chevron_right_rounded), iconSize: 20, onPressed: _currentPage < lastPage ? () => _goToPage(_currentPage + 1) : null),
+      ]),
+    );
+  }
+
+  // ── Table ────────────────────────────────────────────────────────────────
+  //
+  // Web parity: `hospital.patients.partials.table` — # / MRD / Patient /
+  // Doctor / Fee-Type / Status / Actions columns, real DataTables search
+  // (mirrored here by the existing debounced server-side search) and
+  // pagination. Fixed column widths + a horizontal scroll (not
+  // Expanded/flex columns) — a flex-based version of this exact pattern on
+  // the doctor dashboard's tables squeezed the Actions column hard enough
+  // that a button's own Text wrapped character-by-character; this avoids
+  // that class of bug entirely by giving every column a comfortable fixed
+  // width up front. A vertical scroll wraps the horizontal one so a full
+  // page of rows never overflows the tablet shell's fixed content area.
+
+  // Columns are fixed-width by design — a flex-based version of this exact
+  // pattern on the doctor-dashboard tables squeezed a column narrow enough
+  // that a button's own Text wrapped character-by-character. Rendered by
+  // the shared [ScaledDataTable] (fixed-width columns that scale UP
+  // together to fill available width when the rail collapses, horizontal
+  // scroll fallback when space is tight) — the same component OT
+  // Appointments and OT Counsellor's tables use, so this ~60-line
+  // scaffolding is written once instead of duplicated per screen.
+  static const _columns = [
+    ScaledTableColumn('#', 36, headerAlign: TextAlign.center),
+    ScaledTableColumn('MRD', 84),
+    ScaledTableColumn('Patient', 220),
+    ScaledTableColumn('Doctor', 130),
+    ScaledTableColumn('Fee / Type', 100),
+    ScaledTableColumn('Status', 130),
+    ScaledTableColumn('Actions', 300),
+  ];
+
+  Widget _buildTableArea() {
     if (_isLoading) return const AppSkeletonList();
     if (_error != null) {
       return Center(
@@ -368,130 +499,203 @@ class _PatientsScreenState extends State<PatientsScreen> implements Refreshable 
         ),
       );
     }
-    if (_patients.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.inbox_rounded, size: 48, color: AppColors.primaryA22),
-            const SizedBox(height: 10),
-            Text(_search.isNotEmpty ? 'No results match your search.' : 'No patients found.', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: AppColors.primaryA55)),
-          ]),
+    return AppRefreshIndicator(
+      onRefresh: () => _goToPage(_currentPage),
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ScaledDataTable(
+          columns: _columns,
+          rows: List.generate(_patients.length, (i) => _rowCells(i, _patients[i])),
+          emptyMessage: _search.isNotEmpty ? 'No results match your search.' : 'No patients found.',
         ),
-      );
-    }
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      itemCount: _patients.length,
-      separatorBuilder: (_, _) => Divider(height: 1, color: AppColors.primaryA08),
-      itemBuilder: (_, i) {
-        final p = _patients[i];
-        return _PatientListTile(patient: p, selected: p.id == _selectedId, onTap: () => _selectPatient(p));
-      },
+      ),
     );
   }
 
-  Widget _buildPaginationBar() {
-    final meta = _meta!;
-    final lastPage = meta.lastPage;
-    if (lastPage <= 1) return const SizedBox(height: 8);
+  List<Widget> _rowCells(int index, Patient p) {
+    final perPage = _meta?.perPage ?? 20;
+    final serial = ((_currentPage - 1) * perPage) + index + 1;
+    return [
+      Text('$serial', textAlign: TextAlign.center, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700, color: AppColors.primaryA55)),
+      Align(alignment: Alignment.centerLeft, child: _mrdChip(p.patientCode)),
+      _patientCell(p),
+      Text(p.doctor?.name ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      _feeCell(p),
+      Align(alignment: Alignment.centerLeft, child: _statusChipFor(p.status)),
+      _actionsCell(p),
+    ];
+  }
+
+  Widget _mrdChip(String code) => Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(6)),
+        child: Text(code, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary)),
+      );
+
+  Widget _patientCell(Patient p) {
+    final subtitle = [
+      if (p.age != null) '${p.age}y',
+      if (p.gender != null) p.genderDisplay,
+      if (p.contactNo != null) p.contactNo!,
+    ].join(' · ');
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+      Text(p.fullName, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+      const SizedBox(height: 2),
+      Text(subtitle, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.textSecondary)),
+    ]);
+  }
+
+  Widget _feeCell(Patient p) {
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+      Text(p.caseFee != null ? '${widget.hospital.currencySymbol}${p.caseFee!.toInt()}' : '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+      const SizedBox(height: 3),
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+        decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(4)),
+        child: Text(p.type == 'phone' ? 'Phone' : 'Walk-in', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primaryA70)),
+      ),
+    ]);
+  }
+
+  Widget _statusChipFor(PatientStatus status) {
+    final (label, bg, fg) = switch (status) {
+      PatientStatus.completed => ('Completed', AppColors.tealA13, const Color(0xFF0E9E82)),
+      PatientStatus.primaryDone => ('Primary Done', AppColors.primaryA13, AppColors.primary),
+      PatientStatus.waiting => ('Waiting', AppColors.orangeA13, const Color(0xFFE67E22)),
+    };
     return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppColors.primaryA08))),
-      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        IconButton(icon: const Icon(Icons.chevron_left_rounded), iconSize: 20, onPressed: _currentPage > 1 ? () => _goToPage(_currentPage - 1) : null),
-        Text('Page $_currentPage / $lastPage', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
-        IconButton(icon: const Icon(Icons.chevron_right_rounded), iconSize: 20, onPressed: _currentPage < lastPage ? () => _goToPage(_currentPage + 1) : null),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
+      child: Text(label, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: fg)),
+    );
+  }
+
+  // Web parity: `partials/table.blade.php`'s Actions column icon order —
+  // View, divider, Primary Exam, Secondary Exam, divider, History, Print,
+  // Edit, Check-in (phone only) — each gated by the same permission key
+  // web uses (View itself is never permission-gated on web either).
+  Widget _actionsCell(Patient p) {
+    final perm = PermissionService.instance;
+    final canCheckin = perm.can(Perm.opdPatientRegister) && p.type == 'phone' && p.caseId == null;
+    final hasUtilGroup = perm.can(Perm.opdExamHistory) || perm.can(Perm.opdBillPrint) || perm.can(Perm.opdPatientEdit) || canCheckin;
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Row(mainAxisSize: MainAxisSize.min, children: [
+        TableIconAction(icon: Icons.info_outline_rounded, tooltip: 'View', onTap: () => _openViewDialog(p)),
+        _actionDivider(),
+        // Web parity (`partials/table.blade.php`): both the Primary icon's
+        // "done" state and the Secondary lock are driven by `$primary !==
+        // null` — a primary_examination ROW existing at all (created by the
+        // very first autosave) — not `primary_done_at` (only set once the
+        // doctor actually finishes). `primaryDoneAt` here was stricter than
+        // web: a patient with in-progress, not-yet-finished primary data
+        // showed web's Secondary slot already unlocked while this screen
+        // still showed it locked for the same patient.
+        if (perm.can(Perm.opdExamPrimary))
+          p.primaryExamination != null
+              ? _doneIcon(Icons.assignment_turned_in_rounded, 'Primary Done')
+              : TableIconAction(icon: Icons.assignment_outlined, tooltip: 'Primary Exam', onTap: () => _openPrimaryExam(p)),
+        if (perm.can(Perm.opdExamSecondary))
+          p.primaryExamination == null
+              ? _doneIcon(Icons.lock_outline_rounded, 'Complete Primary First', muted: true)
+              : p.secondaryDoneAt != null
+                  ? _doneIcon(Icons.check_circle_rounded, 'Secondary Done')
+                  : p.unlockTimeMs != null
+                      ? _DilationChip(unlockTimeMs: p.unlockTimeMs!, onOverride: () => _openSecondaryExam(p))
+                      : TableIconAction(icon: Icons.remove_red_eye_outlined, tooltip: 'Secondary Exam', onTap: () => _openSecondaryExam(p)),
+        if (hasUtilGroup) _actionDivider(),
+        if (perm.can(Perm.opdExamHistory))
+          TableIconAction(icon: Icons.history_rounded, tooltip: 'History', kind: TableActionKind.history, onTap: () => _openHistoryDialog(p)),
+        if (perm.can(Perm.opdBillPrint))
+          TableIconAction(icon: Icons.print_outlined, tooltip: 'Print', kind: TableActionKind.print, onTap: () => _openPrintBill(p)),
+        if (perm.can(Perm.opdPatientEdit))
+          TableIconAction(icon: Icons.edit_outlined, tooltip: 'Edit', kind: TableActionKind.edit, onTap: () => _openEditDialog(p)),
+        if (canCheckin)
+          TableIconAction(icon: Icons.how_to_reg_rounded, tooltip: 'Check-in', kind: TableActionKind.positive, onTap: () => _openCheckin(p)),
       ]),
     );
   }
 
-  // ── Detail pane ─────────────────────────────────────────────────────────
-
-  Widget _buildDetailPane() {
-    if (_paneMode == _PaneMode.addWalkIn || _paneMode == _PaneMode.addPhone) {
-      return _panelBox(
-        child: PatientFormScreen(mode: _paneMode == _PaneMode.addWalkIn ? PatientFormMode.addWalkIn : PatientFormMode.addPhone, user: widget.user, hospital: widget.hospital, onSaved: _onFormSaved, onCancel: _cancelForm),
-      );
-    }
-    final selected = _patients.where((p) => p.id == _selectedId).firstOrNull;
-    if (_paneMode == _PaneMode.edit && selected != null) {
-      return _panelBox(
-        child: PatientFormScreen(mode: PatientFormMode.edit, patient: selected, user: widget.user, hospital: widget.hospital, onSaved: _onFormSaved, onCancel: _cancelForm),
-      );
-    }
-    if (_paneMode == _PaneMode.history && selected != null) {
-      return _panelBox(
-        child: PatientHistoryScreen(user: widget.user, hospital: widget.hospital, patient: selected, onBack: () => setState(() => _paneMode = _PaneMode.view), onNotReady: _notReady),
-      );
-    }
-    if (selected == null) {
-      return _panelBox(
-        child: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.person_search_rounded, size: 56, color: AppColors.primaryA22),
-            const SizedBox(height: 12),
-            Text('Select a patient to view details', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
-          ]),
+  Widget _doneIcon(IconData icon, String tooltip, {bool muted = false}) => Tooltip(
+        message: tooltip,
+        child: SizedBox(
+          width: TableIconAction.size,
+          height: TableIconAction.size,
+          child: Icon(icon, size: 18, color: muted ? Colors.grey.shade400 : AppColors.teal),
         ),
       );
-    }
-    return _panelBox(child: _PatientDetailView(patient: selected, currencySymbol: widget.hospital.currencySymbol, onEdit: () => _openEdit(selected), onDelete: () => _deletePatient(selected), onHistory: () => _openHistory(selected), onCheckin: () => _openCheckin(selected), onPrimaryExam: () => _openPrimaryExam(selected), onSecondaryExam: () => _openSecondaryExam(selected), onPrintBill: () => _openPrintBill(selected), onNotReady: _notReady));
-  }
 
-  Widget _panelBox({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: child,
-    );
-  }
+  Widget _actionDivider() => Container(width: 1, height: 20, color: AppColors.primaryA12, margin: const EdgeInsets.symmetric(horizontal: 2));
 }
 
-// ── List tile ──────────────────────────────────────────────────────────
+// ── Compact dilation countdown chip for the table's Actions column —
+// web parity: single tap on the timer does nothing, only a double-tap
+// opens the override confirmation; once unlocked it swaps to a plain
+// "Secondary Exam" icon with no dialog at all. Same logic as
+// `_DilationCountdownAction` below (still used by the View dialog's full
+// detail layout), just sized to sit inline with the other row icons. ──────
 
-class _PatientListTile extends StatelessWidget {
-  final Patient patient;
-  final bool selected;
-  final VoidCallback onTap;
+class _DilationChip extends StatefulWidget {
+  final int unlockTimeMs;
+  final VoidCallback onOverride;
+  const _DilationChip({required this.unlockTimeMs, required this.onOverride});
 
-  const _PatientListTile({required this.patient, required this.selected, required this.onTap});
+  @override
+  State<_DilationChip> createState() => _DilationChipState();
+}
+
+class _DilationChipState extends State<_DilationChip> {
+  Timer? _timer;
+  String _text = '';
+  bool _expired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  void _tick() {
+    final r = widget.unlockTimeMs - DateTime.now().millisecondsSinceEpoch;
+    if (r <= 0) {
+      _timer?.cancel();
+      if (mounted) setState(() => _expired = true);
+    } else {
+      final mins = r ~/ 60000;
+      final secs = (r % 60000) ~/ 1000;
+      final txt = '$mins:${secs.toString().padLeft(2, '0')}';
+      if (mounted && txt != _text) setState(() => _text = txt);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _handleDoubleTap() async {
+    final ok = await canStartSecondaryExam(context, widget.unlockTimeMs);
+    if (ok) widget.onOverride();
+  }
 
   @override
   Widget build(BuildContext context) {
-    final p = patient;
-    final subtitle = [if (p.age != null) '${p.age}y', if (p.gender != null) p.genderDisplay, if (p.contactNo != null) p.contactNo!].join(' · ');
-    final (statusLabel, statusColor) = switch (p.status) {
-      PatientStatus.completed => ('Completed', AppColors.teal),
-      PatientStatus.primaryDone => ('Primary Done', AppColors.primary),
-      PatientStatus.waiting => ('Waiting', AppColors.orange),
-    };
-    return Material(
-      color: selected ? AppColors.primaryA08 : Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Row(children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(10)),
-              alignment: Alignment.center,
-              child: Text(p.firstName.isNotEmpty ? p.firstName[0].toUpperCase() : '?', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15)),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(p.fullName, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary), overflow: TextOverflow.ellipsis),
-                Text([p.patientCode, if (subtitle.isNotEmpty) subtitle].join(' · '), style: TextStyle(fontSize: 11, color: AppColors.primaryA55), overflow: TextOverflow.ellipsis),
-              ]),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(color: statusColor.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.xl)),
-              child: Text(statusLabel, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: statusColor)),
-            ),
+    if (_expired) {
+      return TableIconAction(icon: Icons.remove_red_eye_outlined, tooltip: 'Secondary Exam', onTap: widget.onOverride);
+    }
+    return GestureDetector(
+      onDoubleTap: _handleDoubleTap,
+      child: Tooltip(
+        message: 'Dilating — double-tap to override',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 5),
+          decoration: BoxDecoration(color: const Color(0xFFFFF3E0), borderRadius: BorderRadius.circular(6), border: Border.all(color: const Color(0xFFFF9800))),
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            const Icon(Icons.hourglass_bottom_rounded, size: 12, color: Color(0xFFE65100)),
+            const SizedBox(width: 3),
+            Text(_text, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFFE65100))),
           ]),
         ),
       ),
@@ -499,13 +703,13 @@ class _PatientListTile extends StatelessWidget {
   }
 }
 
-// ── Detail view ────────────────────────────────────────────────────────
+// ── Detail view — the "View" action's modal ─────────────────────────────
 
 class _PatientDetailView extends StatelessWidget {
   final Patient patient;
   final String currencySymbol;
+  final VoidCallback onClose;
   final VoidCallback onEdit;
-  final VoidCallback onDelete;
   final VoidCallback onHistory;
   final VoidCallback onCheckin;
   final VoidCallback onPrimaryExam;
@@ -513,150 +717,68 @@ class _PatientDetailView extends StatelessWidget {
   final VoidCallback onPrintBill;
   final void Function(String label) onNotReady;
 
-  const _PatientDetailView({required this.patient, required this.currencySymbol, required this.onEdit, required this.onDelete, required this.onHistory, required this.onCheckin, required this.onPrimaryExam, required this.onSecondaryExam, required this.onPrintBill, required this.onNotReady});
+  const _PatientDetailView({required this.patient, required this.currencySymbol, required this.onClose, required this.onEdit, required this.onHistory, required this.onCheckin, required this.onPrimaryExam, required this.onSecondaryExam, required this.onPrintBill, required this.onNotReady});
 
   @override
   Widget build(BuildContext context) {
     final p = patient;
     final perm = PermissionService.instance;
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(color: AppColors.primary, borderRadius: BorderRadius.circular(16)),
-              alignment: Alignment.center,
-              child: Text(p.firstName.isNotEmpty ? p.firstName[0].toUpperCase() : '?', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 26)),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(p.fullName, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.primary)),
-                const SizedBox(height: 6),
-                Wrap(spacing: 8, runSpacing: 6, children: [
-                  _chip(p.patientCode, AppColors.primaryA10, AppColors.primary),
-                  _statusChip(p.status),
-                  if (p.age != null || p.gender != null) _chip([if (p.age != null) '${p.age}y', if (p.gender != null) p.genderDisplay].join(' · '), AppColors.primaryA07, AppColors.primary),
-                ]),
-              ]),
-            ),
-            Row(children: [
-              if (perm.can(Perm.opdPatientEdit)) IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Edit', color: AppColors.primary),
-              if (perm.can(Perm.opdPatientDelete)) IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Delete', color: AppColors.red),
-            ]),
-          ]),
-          const SizedBox(height: 20),
-          _apptBar(p),
-          const SizedBox(height: 16),
-          LayoutBuilder(builder: (context, c) {
-            final wide = c.maxWidth >= 560;
-            final personal = _infoCard(bg: AppColors.primaryA06, title: 'Personal', items: [
-              _InfoRow(Icons.work_outline_rounded, 'Occupation', p.occupation ?? '—'),
-              _InfoRow(Icons.person_pin_outlined, 'Referrer', p.referrer?.name ?? '—'),
-              _InfoRow(Icons.schedule_outlined, 'Registered', _fmtDate(p.createdAt)),
-            ]);
-            final contact = _infoCard(bg: AppColors.tealA06, title: 'Contact', items: [
-              _InfoRow(Icons.phone_outlined, 'Phone', p.contactNo ?? '—'),
-              _InfoRow(Icons.chat_outlined, 'WhatsApp', p.whatsappNo ?? '—'),
-              _InfoRow(Icons.location_on_outlined, 'Location', p.location?.display ?? '—'),
-            ]);
-            return wide ? Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: personal), const SizedBox(width: 14), Expanded(child: contact)]) : Column(children: [personal, const SizedBox(height: 14), contact]);
-          }),
-          const SizedBox(height: 16),
-          _examCard(p),
-          const SizedBox(height: 20),
-          Wrap(spacing: 10, runSpacing: 10, children: [
-            if (perm.can(Perm.opdExamPrimary) && p.primaryDoneAt == null) _actionBtn('Primary Exam', Icons.assignment_outlined, onPrimaryExam),
-            if (perm.can(Perm.opdExamSecondary) && p.primaryDoneAt != null) _actionBtn('Secondary Exam', Icons.remove_red_eye_outlined, onSecondaryExam),
-            if (perm.can(Perm.opdExamHistory)) _actionBtn('History', Icons.history_rounded, onHistory),
-            if (perm.can(Perm.opdBillPrint)) _actionBtn('Print Bill', Icons.print_outlined, onPrintBill),
-            if (perm.can(Perm.opdPatientRegister) && p.type == 'phone' && p.caseId == null) _actionBtn('Check-in', Icons.how_to_reg_rounded, onCheckin),
-          ]),
+    return AppDialog(
+      size: AppDialogSize.large,
+      header: EntityDialogHeader(
+        name: p.fullName,
+        pills: [
+          Pill(p.patientCode, bg: AppColors.primaryA10, fg: AppColors.primary),
+          if (p.age != null || p.gender != null) Pill([if (p.age != null) '${p.age}y', if (p.gender != null) p.genderDisplay].join(' · '), bg: AppColors.primaryA07, fg: AppColors.primary),
+          ExamChip(label: 'Primary', done: p.primaryDoneAt != null, when: p.primaryDoneAt != null ? _fmtDate(p.primaryDoneAt) : null),
+          ExamChip(label: 'Secondary', done: p.secondaryDoneAt != null, when: p.secondaryDoneAt != null ? _fmtDate(p.secondaryDoneAt) : null),
         ],
-      ),
-    );
-  }
-
-  Widget _apptBar(Patient p) {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 12),
-      decoration: BoxDecoration(color: AppColors.primaryA05, borderRadius: BorderRadius.circular(AppRadius.md)),
-      child: Row(children: [
-        _apptItem(Icons.calendar_today_outlined, 'Appointment', p.appointmentDate ?? '—'),
-        _apptDiv(),
-        _apptItem(Icons.person_outline_rounded, 'Doctor', p.doctor?.name ?? '—'),
-        _apptDiv(),
-        _apptItem(Icons.category_outlined, 'Case', p.caseType?.caseType ?? '—'),
-        _apptDiv(),
-        _apptItem(Icons.currency_rupee_rounded, 'Fee', p.caseFee != null ? '$currencySymbol${p.caseFee!.toInt()}' : '—'),
-      ]),
-    );
-  }
-
-  Widget _apptItem(IconData icon, String label, String value) => Expanded(
-        child: Column(children: [
-          Icon(icon, size: 15, color: AppColors.primaryA55),
-          const SizedBox(height: 4),
-          Text(label, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w600, color: AppColors.primaryA55)),
-          const SizedBox(height: 2),
-          Text(value, textAlign: TextAlign.center, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
+        facts: HeaderFacts([
+          HeaderFact('Appointment', formatDateString(p.appointmentDate)),
+          HeaderFact('Doctor', p.doctor?.name),
+          HeaderFact('Case', p.caseType?.caseType),
+          HeaderFact('Fee', p.caseFee != null ? '$currencySymbol${p.caseFee!.toInt()}' : null),
         ]),
-      );
-
-  Widget _apptDiv() => Container(width: 1, height: 40, color: AppColors.primaryA12);
-
-  Widget _infoCard({required Color bg, required String title, required List<_InfoRow> items}) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.md)),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(title.toUpperCase(), style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1.2, color: AppColors.primaryA60)),
-          const SizedBox(height: 10),
-          ...items.map((r) => Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Icon(r.icon, size: 14, color: AppColors.primaryA55),
-                  const SizedBox(width: 8),
-                  Expanded(
-                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text(r.label, style: TextStyle(fontSize: 10, color: AppColors.primaryA50)),
-                      Text(r.value, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: AppColors.primary)),
-                    ]),
-                  ),
-                ]),
-              )),
+        actions: [
+          if (perm.can(Perm.opdPatientEdit)) IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined, size: 20), tooltip: 'Edit', color: AppColors.primary),
         ],
+        onClose: onClose,
       ),
+      body: _body(p),
+      actions: [
+        AppSecondaryButton(label: 'Close', onPressed: onClose),
+        // Same web-parity fix as `_actionsCell` above — gate by whether a
+        // primary_examination row exists (`primaryExamination`), not by the
+        // stricter `primaryDoneAt`.
+        if (perm.can(Perm.opdExamPrimary) && p.primaryExamination == null) _actionBtn('Primary Exam', Icons.assignment_outlined, onPrimaryExam),
+        if (perm.can(Perm.opdExamSecondary) && p.primaryExamination != null)
+          p.unlockTimeMs != null
+              ? _DilationCountdownAction(
+                  unlockTimeMs: p.unlockTimeMs!,
+                  onOverride: onSecondaryExam,
+                  onExpired: _actionBtn('Secondary Exam', Icons.remove_red_eye_outlined, onSecondaryExam),
+                )
+              : _actionBtn('Secondary Exam', Icons.remove_red_eye_outlined, onSecondaryExam),
+        if (perm.can(Perm.opdExamHistory)) _actionBtn('History', Icons.history_rounded, onHistory),
+        if (perm.can(Perm.opdBillPrint)) _actionBtn('Print Bill', Icons.print_outlined, onPrintBill),
+        if (perm.can(Perm.opdPatientRegister) && p.type == 'phone' && p.caseId == null) _actionBtn('Check-in', Icons.how_to_reg_rounded, onCheckin),
+      ],
     );
   }
 
-  Widget _examCard(Patient p) => Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: AppColors.primaryA04, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA10)),
-        child: Row(children: [
-          Expanded(child: _examStatus('PRIMARY', Icons.assignment_outlined, p.primaryDoneAt)),
-          Container(width: 1, height: 64, color: AppColors.primaryA12),
-          Expanded(child: _examStatus('SECONDARY', Icons.remove_red_eye_outlined, p.secondaryDoneAt)),
-        ]),
-      );
-
-  Widget _examStatus(String title, IconData icon, DateTime? doneAt) {
-    final done = doneAt != null;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      child: Column(children: [
-        Icon(done ? Icons.check_circle_rounded : Icons.radio_button_unchecked, color: done ? AppColors.teal : Colors.grey.shade400, size: 30),
-        const SizedBox(height: 5),
-        Text(title, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, letterSpacing: 1, color: AppColors.primaryA60)),
-        const SizedBox(height: 3),
-        Text(done ? _fmtDate(doneAt) : 'Pending', textAlign: TextAlign.center, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: done ? AppColors.teal : Colors.grey.shade400)),
+  Widget _body(Patient p) {
+    final phone = p.contactNo?.trim() ?? '';
+    final wa = p.whatsappNo?.trim() ?? '';
+    return FactSheet(sections: [
+      FactSection('', [
+        Fact('Phone', phone.isEmpty ? null : phone),
+        Fact('WhatsApp', wa.isEmpty || wa == phone ? null : wa),
+        Fact('Location', p.location?.display),
+        Fact('Occupation', p.occupation),
+        Fact('Referrer', p.referrer?.name),
+        Fact('Registered', p.createdAt == null ? null : _fmtDate(p.createdAt)),
       ]),
-    );
+    ]);
   }
 
   Widget _actionBtn(String label, IconData icon, VoidCallback onTap) {
@@ -664,35 +786,83 @@ class _PatientDetailView extends StatelessWidget {
       onPressed: onTap,
       icon: Icon(icon, size: 16),
       label: Text(label),
-      style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA22), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md))),
+      style: OutlinedButton.styleFrom(foregroundColor: AppColors.primary, side: BorderSide(color: AppColors.primaryA22), padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md))),
     );
   }
 
-  Widget _chip(String text, Color bg, Color fg) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(6)),
-        child: Text(text, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg)),
-      );
-
-  Widget _statusChip(PatientStatus status) {
-    final (label, bg, fg) = switch (status) {
-      PatientStatus.completed => ('Completed', AppColors.tealA13, const Color(0xFF0E9E82)),
-      PatientStatus.primaryDone => ('Primary Done', AppColors.primaryA13, AppColors.primary),
-      PatientStatus.waiting => ('Waiting', AppColors.orangeA13, const Color(0xFFE67E22)),
-    };
-    return _chip(label, bg, fg);
-  }
-
-  String _fmtDate(DateTime? dt) {
-    if (dt == null) return '—';
-    const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-    return '${dt.day} ${m[dt.month - 1]} ${dt.year}';
-  }
+  // Date+time (hospital-timezone-aware), matching web's `d M Y, h:i A`.
+  String _fmtDate(DateTime? dt) => dt == null ? '—' : toDisplayDateTime(dt);
 }
 
-class _InfoRow {
-  final IconData icon;
-  final String label;
-  final String value;
-  const _InfoRow(this.icon, this.label, this.value);
+// ─── Dilation countdown action (View-dialog-sized, full button width) —
+// web parity: single tap on the countdown does nothing, only a double-tap
+// opens the override confirmation; once unlocked it swaps to [onExpired]
+// (the plain "Secondary Exam" button) with no dialog at all. ───────────────
+
+class _DilationCountdownAction extends StatefulWidget {
+  final int unlockTimeMs;
+  final VoidCallback onOverride;
+  final Widget onExpired;
+  const _DilationCountdownAction({required this.unlockTimeMs, required this.onOverride, required this.onExpired});
+
+  @override
+  State<_DilationCountdownAction> createState() => _DilationCountdownActionState();
+}
+
+class _DilationCountdownActionState extends State<_DilationCountdownAction> {
+  Timer? _timer;
+  String _text = '';
+  bool _expired = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _tick();
+    _timer = Timer.periodic(const Duration(seconds: 1), (_) => _tick());
+  }
+
+  void _tick() {
+    final r = widget.unlockTimeMs - DateTime.now().millisecondsSinceEpoch;
+    if (r <= 0) {
+      _timer?.cancel();
+      if (mounted) setState(() => _expired = true);
+    } else {
+      final mins = r ~/ 60000;
+      final secs = (r % 60000) ~/ 1000;
+      final txt = '$mins:${secs.toString().padLeft(2, '0')}';
+      if (mounted && txt != _text) setState(() => _text = txt);
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  Future<void> _handleDoubleTap() async {
+    final ok = await canStartSecondaryExam(context, widget.unlockTimeMs);
+    if (ok) widget.onOverride();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_expired) return widget.onExpired;
+    return GestureDetector(
+      onDoubleTap: _handleDoubleTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        decoration: BoxDecoration(
+          color: const Color(0xFFFFF3E0),
+          borderRadius: BorderRadius.circular(AppRadius.md),
+          border: Border.all(color: const Color(0xFFFF9800)),
+        ),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.hourglass_bottom_rounded, size: 16, color: Color(0xFFE65100)),
+          const SizedBox(width: 6),
+          Text(_text, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Color(0xFFE65100))),
+        ]),
+      ),
+    );
+  }
 }

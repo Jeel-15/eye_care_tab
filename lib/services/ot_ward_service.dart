@@ -9,6 +9,8 @@ import 'base_service.dart';
 /// write (`ot.preop.entry` for vitals, `ot.dilation.track` for eye-drops)
 /// are gated by different permissions — see build PRD §7 gotcha, screens
 /// must gate actions individually, not the whole screen.
+/// OT Assistant picker options come from verification-header.ot_assistants
+/// (web parity) — never from /config/users.
 class OtWardService with AuthenticatedService {
   OtWardService._();
   static final OtWardService instance = OtWardService._();
@@ -41,7 +43,7 @@ class OtWardService with AuthenticatedService {
     return list.map((e) => OtEyeDropEntry.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  Future<OtEyeDropEntry> addEyeDrop(int bookingId, {required String medicineName, required String eye, required int doseNumber, String? administeredAt, String? remarks}) async {
+  Future<OtEyeDropEntry> addEyeDrop(int bookingId, {required String medicineName, required String eye, required int doseNumber, String? administeredAt, String? remarks, String? dilate, int? dilationTime}) async {
     final res = await http
         .post(
           Uri.parse('$_base/ot/bookings/$bookingId/eye-drops'),
@@ -52,6 +54,8 @@ class OtWardService with AuthenticatedService {
             'dose_number': doseNumber,
             if (administeredAt != null) 'administered_at': administeredAt,
             'remarks': remarks,
+            if (dilate != null) 'dilate': dilate,
+            if (dilationTime != null) 'dilation_time': dilationTime,
           }),
         )
         .timeout(AppConfig.requestTimeout);
@@ -68,8 +72,17 @@ class OtWardService with AuthenticatedService {
   /// `GET ot/ward/bookings` — the Ward Entry Queue: bookings with
   /// `ot_status` in payment_verified/in_ward/ready. See
   /// OT_WEB_PARITY_FIX_PRD.md §4 (previously no queue endpoint existed).
-  Future<({List<OtBookingSummary> items, OtPaginationMeta meta})> fetchBookings({int page = 1, int perPage = 25}) async {
-    final uri = Uri.parse('$_base/ot/ward/bookings').replace(queryParameters: {'page': '$page', 'per_page': '$perPage'});
+  /// [filter]: `queue` or `history` ("Ward History" — ready/operated/
+  /// discharged, date-ranged via [fromDate]/[toDate] — web pull 2026-09-19
+  /// Queue/All toggle, `FiltersOtDeskLists` trait).
+  Future<({List<OtBookingSummary> items, OtPaginationMeta meta})> fetchBookings({String filter = 'queue', String? fromDate, String? toDate, int page = 1, int perPage = 25}) async {
+    final uri = Uri.parse('$_base/ot/ward/bookings').replace(queryParameters: {
+      'filter': filter,
+      if (fromDate != null) 'from_date': fromDate,
+      if (toDate != null) 'to_date': toDate,
+      'page': '$page',
+      'per_page': '$perPage',
+    });
     final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     final data = body['data'] as Map<String, dynamic>;

@@ -66,17 +66,42 @@ class OtInventoryService with AuthenticatedService {
     return (body['data'] as List? ?? []).map((e) => LensPowerItem.fromJson(e as Map<String, dynamic>)).toList();
   }
 
-  Future<LensPowerItem> createLensPower(String value, bool isFavourite) async {
+  Future<LensPowerItem> createLensPower(
+    double power, {
+    bool isFavourite = false,
+    bool isActive = true,
+  }) async {
     final res = await http
-        .post(Uri.parse('$_base/masters/ot/lens-powers'), headers: await headers, body: jsonEncode({'value': value, 'is_favourite': isFavourite}))
+        .post(
+          Uri.parse('$_base/masters/ot/lens-powers'),
+          headers: await headers,
+          body: jsonEncode({
+            'power': power,
+            'is_favourite': isFavourite,
+            'is_active': isActive,
+          }),
+        )
         .timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return LensPowerItem.fromJson(body['data'] as Map<String, dynamic>);
   }
 
-  Future<LensPowerItem> updateLensPower(int id, String value, bool isFavourite) async {
+  Future<LensPowerItem> updateLensPower(
+    int id,
+    double power, {
+    required bool isFavourite,
+    required bool isActive,
+  }) async {
     final res = await http
-        .put(Uri.parse('$_base/masters/ot/lens-powers/$id'), headers: await headers, body: jsonEncode({'value': value, 'is_favourite': isFavourite}))
+        .put(
+          Uri.parse('$_base/masters/ot/lens-powers/$id'),
+          headers: await headers,
+          body: jsonEncode({
+            'power': power,
+            'is_favourite': isFavourite,
+            'is_active': isActive,
+          }),
+        )
         .timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return LensPowerItem.fromJson(body['data'] as Map<String, dynamic>);
@@ -106,6 +131,7 @@ class OtInventoryService with AuthenticatedService {
     required double surgeonCharges,
     required double nursingCharges,
     required double consumablesCharges,
+    required bool isActive,
   }) => {
         'package_name': packageName,
         'room_category': roomCategory,
@@ -113,6 +139,12 @@ class OtInventoryService with AuthenticatedService {
         'surgeon_charges': surgeonCharges,
         'nursing_charges': nursingCharges,
         'consumables_charges': consumablesCharges,
+        // The API defaults this to `false` when omitted (matching web's own
+        // controller) — web's form always sends it because its "Active"
+        // checkbox is checked by default; this must do the same or every
+        // package created here silently never shows up in the Counselling
+        // form's package dropdown (`is_active = true` filter).
+        'is_active': isActive,
       };
 
   Future<OtPackageMasterItem> createPackage({
@@ -122,13 +154,14 @@ class OtInventoryService with AuthenticatedService {
     required double surgeonCharges,
     required double nursingCharges,
     required double consumablesCharges,
+    bool isActive = true,
   }) async {
     final res = await http
         .post(Uri.parse('$_base/masters/ot/packages'),
             headers: await headers,
             body: jsonEncode(_packageBody(
                 packageName: packageName, roomCategory: roomCategory,
-                otCharges: otCharges, surgeonCharges: surgeonCharges, nursingCharges: nursingCharges, consumablesCharges: consumablesCharges)))
+                otCharges: otCharges, surgeonCharges: surgeonCharges, nursingCharges: nursingCharges, consumablesCharges: consumablesCharges, isActive: isActive)))
         .timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return OtPackageMasterItem.fromJson(body['data'] as Map<String, dynamic>);
@@ -141,13 +174,14 @@ class OtInventoryService with AuthenticatedService {
     required double surgeonCharges,
     required double nursingCharges,
     required double consumablesCharges,
+    bool isActive = true,
   }) async {
     final res = await http
         .put(Uri.parse('$_base/masters/ot/packages/$id'),
             headers: await headers,
             body: jsonEncode(_packageBody(
                 packageName: packageName, roomCategory: roomCategory,
-                otCharges: otCharges, surgeonCharges: surgeonCharges, nursingCharges: nursingCharges, consumablesCharges: consumablesCharges)))
+                otCharges: otCharges, surgeonCharges: surgeonCharges, nursingCharges: nursingCharges, consumablesCharges: consumablesCharges, isActive: isActive)))
         .timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return OtPackageMasterItem.fromJson(body['data'] as Map<String, dynamic>);

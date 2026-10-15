@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import '../utils/json_parse.dart';
 import 'base_service.dart';
 
 class OtSlotItem {
@@ -17,7 +18,7 @@ class OtSlotItem {
   });
 
   factory OtSlotItem.fromJson(Map<String, dynamic> j) => OtSlotItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         slotName: j['slot_name'] as String? ?? '',
         startTime: j['start_time'] as String?,
         endTime: j['end_time'] as String?,

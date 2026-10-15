@@ -3,6 +3,7 @@ import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../models/ot_booking_models.dart';
 import 'base_service.dart';
+import 'ot_surgery_type_service.dart';
 
 /// Round 3.5's `OtBookingApiController` — the doctor's "Recommend Surgery"
 /// handoff that creates/updates the `OtBooking` row, plus the OT receptionist
@@ -25,6 +26,24 @@ class OtBookingService with AuthenticatedService {
   /// 2026-08-07 dropped both from this endpoint entirely (always null at
   /// recommend time now; assigned later by the counsellor/ward flow). See
   /// WEB_PULL_2026_08_07_APP_PARITY_AUDIT.md §1.
+  /// `GET /ot/recommend-surgery/surgery-types` — surgery-type options for
+  /// the Recommend Surgery sheet/dialog. Deliberately separate from
+  /// `OtSurgeryTypeService.fetchAll()` (used by the actual OT Surgery Type
+  /// masters-management screen): that one requires OT-masters CRUD
+  /// permission, which a doctor who can only recommend surgery won't have —
+  /// calling it from here 403'd for such roles, matching web's
+  /// `LoadsOtRecommendContext` which loads this list under the exam page's
+  /// own permission instead. See this endpoint's controller doc comment.
+  Future<List<OtSurgeryTypeItem>> fetchSurgeryTypesForRecommend() async {
+    final res = await http
+        .get(Uri.parse('$_base/ot/recommend-surgery/surgery-types'), headers: await headers)
+        .timeout(AppConfig.requestTimeout);
+    final body = _parse(res);
+    return (body['data'] as List? ?? [])
+        .map((e) => OtSurgeryTypeItem.fromJson(e as Map<String, dynamic>))
+        .toList();
+  }
+
   Future<OtRecommendSurgeryResult> recommendSurgery({
     required int patientId,
     required String eye, // RE | LE | Both

@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import '../models/patient_history_models.dart';
 import '../models/share_history_models.dart';
 import 'base_service.dart';
 
@@ -183,5 +184,20 @@ class ShareHistoryService with AuthenticatedService {
       meta: ShareHistoryMeta.fromJson(data['meta'] as Map<String, dynamic>),
       partnerName: (data['partner_hospital'] as Map<String, dynamic>?)?['name'] as String? ?? '',
     );
+  }
+
+  // ── Partner patient's own exam history (the View action) ───────────
+  // Web parity: `hospital.shared.patient.history` — this patient belongs
+  // entirely to the connected hospital's tenant, so it can't be fetched via
+  // the normal (tenant-scoped) patient-history endpoint.
+  Future<ExamHistoryData> fetchPartnerPatientHistory(String patientIds) async {
+    final uri = Uri.parse('$_base/patient-history')
+        .replace(queryParameters: {'patient_ids': patientIds});
+    final resp = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
+
+    if (resp.statusCode != 200) throw Exception('Failed to load patient history: ${resp.statusCode}');
+
+    final body = jsonDecode(resp.body) as Map<String, dynamic>;
+    return ExamHistoryData.fromJson(body['data'] as Map<String, dynamic>);
   }
 }

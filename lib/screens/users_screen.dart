@@ -2,27 +2,67 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show Clipboard, ClipboardData;
 import '../constants/app_colors.dart';
+import '../utils/app_dialogs.dart';
 import '../constants/app_radius.dart';
 import '../constants/permissions.dart';
 import '../models/auth_models.dart';
+import '../models/user_permission_policy.dart';
+import '../services/masters_service.dart';
 import '../services/permission_service.dart';
 import '../services/user_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/app_dialog.dart';
+import '../widgets/app_refresh_indicator.dart';
+import '../widgets/ot_panel_header.dart';
+import '../widgets/scaled_data_table.dart';
 import '../widgets/skeleton.dart';
-import '../widgets/split_pane_scaffold.dart';
+import '../widgets/table_pagination_footer.dart';
+import '../widgets/table_row_action.dart';
+import '../widgets/table_tools_bar.dart';
 import 'user_form_pane.dart';
 
-enum _PaneMode { view, add, edit }
-
-/// Tablet Users module — Pattern A (list + detail split), matching Patients
-/// and Masters. Left pane: search + paginated list. Right pane: selected
-/// user's profile, or [UserFormPane] (Pattern C) when adding/editing.
-/// Business logic ported from eye_care_app/lib/screens/users_screen.dart.
+/// Tablet Staff Users — web-parity table redesign (2026-09-21), matching
+/// `hospital/users/index.blade.php` exactly: a colored panel header
+/// ("Staff Users" + subtitle + a "N total" pill + "+ Add User"), Show
+/// entries + search, a single full-page table (Name / Email / Role /
+/// Contact / [Password, Hospital-Admin-only] / Status / Action) with
+/// "Showing X to Y of Z entries" pagination — reusing the exact same
+/// `OtPanelHeader`/`ScaledDataTable`/`TableToolsBar`/`TablePaginationFooter`
+/// widgets every other OT/Patients/Reports table screen in this app
+/// already uses, instead of a hand-duplicated copy of that scaffolding.
+///
+/// Replaces the previous Pattern A (list + detail split-pane): web has no
+/// separate "view profile" page for a user — only Edit (which shows every
+/// field, including doctor-specific ones) and Delete — so the split-pane's
+/// `_UserDetailView` is gone; Add/Edit now open [UserFormPane] in a modal
+/// `Dialog`, the same `showDialog` + `ConstrainedBox` pattern already used
+/// for every other OT form (`OtAppointmentFormPane`, the counselling pane,
+/// etc.) — mirrors web's own same-page modal for Add/Edit exactly.
+///
+/// **Password column, confirmed against web + the mobile API**: it is NOT
+/// a live/current password — it's `original_password`, a plaintext
+/// snapshot of whatever an admin last set (at creation, or via Edit's
+/// password field) — never cleared when a user changes their own password
+/// via self-service, so it can go stale. Web gates the ENTIRE column
+/// (header + cell, not just the value) on `role.is_super` (Hospital Admin
+/// only) — matched here via `PermissionService.instance.isSuper`, same
+/// gate this screen's previous detail view already used correctly.
+///
+/// **Status pill is non-interactive on web** (only changeable via the Edit
+/// form's status field) — but this app's tap-to-toggle behavior predates
+/// this redesign and calls a real, permission-gated backend endpoint
+/// (`toggleStatus`), not an invented one — kept as a deliberate
+/// tablet-appropriate UX improvement, not a web-parity gap.
 class UsersScreen extends StatefulWidget {
   final UserInfo user;
   final HospitalInfo hospital;
+  /// Web parity: the dashboard's Doctor/Reception cards link to
+  /// `hospital.users.index?role=doctor` etc., pre-filtered to just that
+  /// role — not the full unfiltered list. Resolved to a role_id (the only
+  /// filter the API accepts) once the roles list loads.
+  final String? initialRoleSlug;
 
-  const UsersScreen({super.key, required this.user, required this.hospital});
+  const UsersScreen({super.key, required this.user, required this.hospital, this.initialRoleSlug});
 
   @override
   State<UsersScreen> createState() => _UsersScreenState();
@@ -32,6 +72,26 @@ class _UsersScreenState extends State<UsersScreen> {
   final _searchCtrl = TextEditingController();
   Timer? _debounce;
   String _search = '';
+  int _perPage = 25;
+
+  final _p = PermissionService.instance;
+  bool get _canAdd => _p.canAny(const [
+        Perm.masterDoctorAdd,
+        Perm.masterReceptionAdd,
+        Perm.masterOtStaffAdd,
+      ]);
+  bool _canForUser(HospitalUserModel user, String action) {
+    final role = user.role;
+    if (role == null) return false;
+    // The API refuses to manage super-role accounts for every viewer.
+    if (role.isSuper) return false;
+    final category = UserPermissionPolicy.categoryFor(
+      userCategory: role.userCategory,
+      roleSlug: role.slug,
+      roleName: role.name,
+    );
+    return _p.can(UserPermissionPolicy.permissionKey(category, action));
+  }
 
   List<HospitalUserModel> _users = [];
   int _currentPage = 1;
@@ -40,12 +100,41 @@ class _UsersScreenState extends State<UsersScreen> {
   bool _loading = true;
   String? _error;
 
-  int? _selectedId;
-  _PaneMode _paneMode = _PaneMode.view;
+  int? _roleFilterId;
+  String? _roleFilterLabel;
 
   @override
   void initState() {
     super.initState();
+    if (widget.initialRoleSlug != null) {
+      _applyInitialRoleFilter();
+    } else {
+      _load(refresh: true);
+    }
+  }
+
+  /// Resolves the dashboard's role-slug link (e.g. "doctor") to a role_id —
+  /// the only filter `fetchUsers` accepts — before the first load.
+  Future<void> _applyInitialRoleFilter() async {
+    try {
+      final formData = await UserService.instance.fetchFormData();
+      UserRole? role;
+      for (final r in formData.roles) {
+        if (r.slug == widget.initialRoleSlug) { role = r; break; }
+      }
+      final found = role;
+      if (found != null && mounted) {
+        setState(() { _roleFilterId = found.id; _roleFilterLabel = found.name; });
+      }
+    } catch (_) {
+      // Filter is a convenience — fall through to an unfiltered list rather
+      // than blocking the screen on a failed lookup.
+    }
+    if (mounted) _load(refresh: true);
+  }
+
+  void _clearRoleFilter() {
+    setState(() { _roleFilterId = null; _roleFilterLabel = null; });
     _load(refresh: true);
   }
 
@@ -63,7 +152,12 @@ class _UsersScreenState extends State<UsersScreen> {
       _error = null;
     });
     try {
-      final resp = await UserService.instance.fetchUsers(page: page, search: _search.isEmpty ? null : _search);
+      final resp = await UserService.instance.fetchUsers(
+        page: page,
+        perPage: _perPage <= 0 ? 9999 : _perPage,
+        search: _search.isEmpty ? null : _search,
+        roleId: _roleFilterId,
+      );
       if (!mounted) return;
       setState(() {
         _users = resp.users;
@@ -91,55 +185,56 @@ class _UsersScreenState extends State<UsersScreen> {
     });
   }
 
-  void _selectUser(HospitalUserModel u) => setState(() {
-        _selectedId = u.id;
-        _paneMode = _PaneMode.view;
-      });
+  void _onPerPageChanged(int v) {
+    setState(() => _perPage = v);
+    _load(refresh: true);
+  }
 
-  void _openAdd() => setState(() {
-        _selectedId = null;
-        _paneMode = _PaneMode.add;
-      });
+  Future<void> _openAdd() async {
+    await showPaneDialog<void>(
+      context,
+      wide: true,
+      barrierDismissible: false,
+      builder: (dCtx) => UserFormPane(
+        key: const ValueKey('user_form_add'),
+        mode: UserFormMode.add,
+        onSaved: (saved) { Navigator.pop(dCtx); _onFormSaved(); },
+        onCancel: () => Navigator.pop(dCtx),
+      ),
+    );
+  }
 
-  void _openEdit(HospitalUserModel u) => setState(() {
-        _selectedId = u.id;
-        _paneMode = _PaneMode.edit;
-      });
+  Future<void> _openEdit(HospitalUserModel u) async {
+    await showPaneDialog<void>(
+      context,
+      wide: true,
+      barrierDismissible: false,
+      builder: (dCtx) => UserFormPane(
+        key: ValueKey('user_form_edit_${u.id}'),
+        mode: UserFormMode.edit,
+        editUser: u,
+        onSaved: (saved) { Navigator.pop(dCtx); _onFormSaved(); },
+        onCancel: () => Navigator.pop(dCtx),
+      ),
+    );
+  }
 
-  void _cancelForm() => setState(() => _paneMode = _PaneMode.view);
-
-  void _onFormSaved(HospitalUserModel saved) {
-    setState(() {
-      _paneMode = _PaneMode.view;
-      _selectedId = saved.id;
-    });
+  void _onFormSaved() {
     _load();
     showAppSnackBar(context, 'Saved.', isSuccess: true);
   }
 
   Future<void> _confirmDelete(HospitalUserModel u) async {
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.xl)),
-        title: Text('Delete User', style: TextStyle(fontWeight: FontWeight.w800, color: AppColors.primary)),
-        content: Text('Delete "${u.name}"? This action cannot be undone.', style: TextStyle(color: AppColors.textSecondary)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.red, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md))),
-            child: const Text('Delete', style: TextStyle(fontWeight: FontWeight.w700)),
-          ),
-        ],
-      ),
-    );
-    if (ok != true || !mounted) return;
+    final ok = await showAppConfirmDialog(context, title: 'Delete User', message: 'Delete "${u.name}"? This cannot be undone.', confirmLabel: 'Delete', destructive: true);
+    if (!ok || !mounted) return;
     try {
       await UserService.instance.deleteUser(u.id);
+      // See user_form_pane.dart's save() for why this matters — an
+      // inactive/deleted doctor must not keep showing up in other screens'
+      // doctor dropdowns for the rest of the app session.
+      MastersService.instance.clearCache();
       if (!mounted) return;
       showAppSnackBar(context, '"${u.name}" deleted successfully', isSuccess: true);
-      if (_selectedId == u.id) setState(() => _selectedId = null);
       _load();
     } catch (e) {
       if (!mounted) return;
@@ -150,6 +245,7 @@ class _UsersScreenState extends State<UsersScreen> {
   Future<void> _toggleStatus(HospitalUserModel u) async {
     try {
       final newStatus = await UserService.instance.toggleStatus(u.id);
+      MastersService.instance.clearCache();
       if (!mounted) return;
       setState(() {
         final idx = _users.indexWhere((x) => x.id == u.id);
@@ -157,7 +253,7 @@ class _UsersScreenState extends State<UsersScreen> {
           _users[idx] = HospitalUserModel(
             id: u.id, name: u.name, email: u.email, contact: u.contact, status: newStatus, role: u.role, focPermission: u.focPermission,
             lastLoginAt: u.lastLoginAt, doctorType: u.doctorType, doctorPrefix: u.doctorPrefix, registrationNo: u.registrationNo,
-            experienceYears: u.experienceYears, signatureUrl: u.signatureUrl, profilePhotoUrl: u.profilePhotoUrl,
+            experienceYears: u.experienceYears, signatureUrl: u.signatureUrl, profilePhotoUrl: u.profilePhotoUrl, originalPassword: u.originalPassword,
           );
         }
       });
@@ -168,10 +264,18 @@ class _UsersScreenState extends State<UsersScreen> {
     }
   }
 
+  String _initials(String name) {
+    final parts = name.trim().split(RegExp(r'\s+'));
+    if (parts.isEmpty || parts.first.isEmpty) return '?';
+    if (parts.length == 1) return parts[0].substring(0, parts[0].length >= 2 ? 2 : 1).toUpperCase();
+    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  }
+
   @override
   Widget build(BuildContext context) {
-    final p = PermissionService.instance;
-    if (!p.can(Perm.masterDoctors) && !p.can(Perm.masterReceptions) && !p.can(Perm.masterOtStaff)) {
+    if (!_p.canFeature('master', 'user_doctor') &&
+        !_p.canFeature('master', 'user_reception') &&
+        !_p.canFeature('master', 'user_ot_staff')) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(Icons.lock_outline_rounded, size: 56, color: AppColors.primaryA25),
@@ -182,71 +286,103 @@ class _UsersScreenState extends State<UsersScreen> {
         ]),
       );
     }
-    return SplitPaneScaffold(
-      showDetail: _selectedId != null || _paneMode != _PaneMode.view,
-      onBack: () => setState(() { _selectedId = null; _paneMode = _PaneMode.view; }),
-      listPane: _buildListPane(),
-      detailPane: _buildDetailPane(),
-      listPaneWidth: 380,
-    );
-  }
-
-  // ── List pane ────────────────────────────────────────────────────────
-
-  Widget _buildListPane() {
-    return Container(
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      clipBehavior: Clip.antiAlias,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Row(children: [
-              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text('Users', style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppColors.primary)),
-                if (!_loading && _error == null) Text('$_total member${_total == 1 ? '' : 's'}', style: TextStyle(fontSize: 11, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
-              ]),
-              const Spacer(),
-              IconButton(icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh', onPressed: _loading ? null : () => _load(refresh: true)),
-              IconButton(icon: Icon(Icons.person_add_alt_1_rounded, color: AppColors.primary, size: 20), tooltip: 'Add User', onPressed: _openAdd),
-            ]),
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Container(
+        decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
+        clipBehavior: Clip.antiAlias,
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _buildHeader(),
+          if (_roleFilterLabel != null) _buildRoleFilterChip(),
+          TableToolsBar(
+            perPage: _perPage,
+            onPerPageChanged: _onPerPageChanged,
+            searchCtrl: _searchCtrl,
+            onSearchChanged: _onSearchChanged,
+            searchHint: 'Search by name, email or contact...',
           ),
-          Padding(padding: const EdgeInsets.symmetric(horizontal: 16), child: _buildSearchBar()),
-          const SizedBox(height: 6),
-          Expanded(child: _buildList()),
-          if (_lastPage > 1) _buildPaginationBar(),
+          Expanded(child: _buildTableArea()),
+          _buildPaginationFooter(),
+        ]),
+      ),
+    );
+  }
+
+  Widget _buildHeader() {
+    return OtPanelHeader(
+      icon: Icons.badge_rounded,
+      title: 'Staff Users',
+      subtitle: 'Review team accounts and keep access information current.',
+      actions: [
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+          decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(AppRadius.full)),
+          child: Text('$_total TOTAL', style: const TextStyle(color: Colors.white, fontSize: 11, fontWeight: FontWeight.w800, letterSpacing: 0.3)),
+        ),
+        if (_canAdd) ...[
+          const SizedBox(width: 10),
+          ElevatedButton.icon(
+            onPressed: _openAdd,
+            icon: Icon(Icons.person_add_alt_1_rounded, size: 15, color: AppColors.primary),
+            label: Text('Add User', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w700, fontSize: 12.5)),
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10), minimumSize: Size.zero, tapTargetSize: MaterialTapTargetSize.shrinkWrap, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.full))),
+          ),
         ],
+      ],
+    );
+  }
+
+  /// Shown when arriving from the dashboard's Doctor/Reception cards —
+  /// makes the applied filter visible and lets the admin clear it to see
+  /// everyone, instead of silently hiding other roles with no indication.
+  Widget _buildRoleFilterChip() {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Container(
+          padding: const EdgeInsets.only(left: 10, right: 4, top: 5, bottom: 5),
+          decoration: BoxDecoration(
+            color: AppColors.primaryA08,
+            borderRadius: BorderRadius.circular(AppRadius.xl),
+            border: Border.all(color: AppColors.primaryA18),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(Icons.filter_alt_rounded, size: 13, color: AppColors.primary),
+              const SizedBox(width: 5),
+              Text(_roleFilterLabel!, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+              const SizedBox(width: 2),
+              InkWell(
+                onTap: _clearRoleFilter,
+                borderRadius: BorderRadius.circular(20),
+                child: Padding(
+                  padding: const EdgeInsets.all(4),
+                  child: Icon(Icons.close_rounded, size: 14, color: AppColors.primaryA55),
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }
 
-  Widget _buildSearchBar() {
-    return TextField(
-      controller: _searchCtrl,
-      onChanged: _onSearchChanged,
-      decoration: InputDecoration(
-        hintText: 'Search by name, email or contact...',
-        hintStyle: TextStyle(fontSize: 13, color: AppColors.primaryA45),
-        prefixIcon: Icon(Icons.search_rounded, color: AppColors.primaryA55, size: 20),
-        suffixIcon: _searchCtrl.text.isNotEmpty
-            ? IconButton(icon: Icon(Icons.close_rounded, color: AppColors.primaryA55, size: 18), onPressed: () {
-                _searchCtrl.clear();
-                _onSearchChanged('');
-              })
-            : null,
-        filled: true,
-        fillColor: AppColors.background,
-        contentPadding: const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide.none),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide.none),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
-      ),
-    );
-  }
+  // ── Table ────────────────────────────────────────────────────────────────
 
-  Widget _buildList() {
-    if (_loading) return const AppSkeletonList(count: 7, itemHeight: 70);
+  List<ScaledTableColumn> get _columns => [
+        const ScaledTableColumn('NAME', 170),
+        const ScaledTableColumn('EMAIL', 190),
+        const ScaledTableColumn('ROLE', 130),
+        const ScaledTableColumn('CONTACT', 120),
+        if (_p.isSuper) const ScaledTableColumn('PASSWORD', 140),
+        const ScaledTableColumn('STATUS', 100),
+        const ScaledTableColumn('ACTION', 100, headerAlign: TextAlign.right),
+      ];
+
+  Widget _buildTableArea() {
+    if (_loading) return const AppSkeletonList();
     if (_error != null) {
       return Center(
         child: Padding(
@@ -261,285 +397,101 @@ class _UsersScreenState extends State<UsersScreen> {
         ),
       );
     }
-    if (_users.isEmpty) {
-      return Center(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.manage_accounts_rounded, size: 48, color: AppColors.primaryA22),
-            const SizedBox(height: 10),
-            Text(_search.isEmpty ? 'No users yet.\nTap + to add the first user.' : 'No users match "$_search"', textAlign: TextAlign.center, style: TextStyle(fontSize: 12, color: AppColors.primaryA55)),
-          ]),
-        ),
-      );
-    }
-    return ListView.separated(
-      padding: const EdgeInsets.symmetric(vertical: 6),
-      itemCount: _users.length,
-      separatorBuilder: (_, _) => Divider(height: 1, color: AppColors.primaryA08),
-      itemBuilder: (_, i) {
-        final u = _users[i];
-        return _UserListTile(user: u, selected: u.id == _selectedId, onTap: () => _selectUser(u));
-      },
-    );
-  }
-
-  Widget _buildPaginationBar() {
-    return Container(
-      padding: const EdgeInsets.symmetric(vertical: 8, horizontal: 12),
-      decoration: BoxDecoration(border: Border(top: BorderSide(color: AppColors.primaryA08))),
-      child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-        IconButton(icon: const Icon(Icons.chevron_left_rounded), iconSize: 20, onPressed: _currentPage > 1 ? () { _currentPage--; _load(); } : null),
-        Text('Page $_currentPage / $_lastPage', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.primary)),
-        IconButton(icon: const Icon(Icons.chevron_right_rounded), iconSize: 20, onPressed: _currentPage < _lastPage ? () { _currentPage++; _load(); } : null),
-      ]),
-    );
-  }
-
-  // ── Detail pane ─────────────────────────────────────────────────────────
-
-  Widget _buildDetailPane() {
-    if (_paneMode == _PaneMode.add) {
-      return _panelBox(child: UserFormPane(mode: UserFormMode.add, onSaved: _onFormSaved, onCancel: _cancelForm));
-    }
-    final selected = _users.where((u) => u.id == _selectedId).firstOrNull;
-    if (_paneMode == _PaneMode.edit && selected != null) {
-      return _panelBox(child: UserFormPane(mode: UserFormMode.edit, editUser: selected, onSaved: _onFormSaved, onCancel: _cancelForm));
-    }
-    if (selected == null) {
-      return _panelBox(
-        child: Center(
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            Icon(Icons.manage_accounts_rounded, size: 56, color: AppColors.primaryA22),
-            const SizedBox(height: 12),
-            Text('Select a user to view details', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
-          ]),
-        ),
-      );
-    }
-    return _panelBox(child: _UserDetailView(user: selected, onEdit: () => _openEdit(selected), onDelete: () => _confirmDelete(selected), onToggleStatus: () => _toggleStatus(selected)));
-  }
-
-  Widget _panelBox({required Widget child}) {
-    return Container(
-      padding: const EdgeInsets.all(24),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: child,
-    );
-  }
-}
-
-// ── List tile ──────────────────────────────────────────────────────────
-
-class _UserListTile extends StatelessWidget {
-  final HospitalUserModel user;
-  final bool selected;
-  final VoidCallback onTap;
-
-  const _UserListTile({required this.user, required this.selected, required this.onTap});
-
-  String _initials(String name) {
-    final parts = name.trim().split(RegExp(r'\s+'));
-    if (parts.isEmpty || parts.first.isEmpty) return '?';
-    if (parts.length == 1) return parts[0].substring(0, parts[0].length >= 2 ? 2 : 1).toUpperCase();
-    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final roleColor = user.role?.parsedColor ?? AppColors.primary;
-    final isActive = user.status == 'active';
-    return Material(
-      color: selected ? AppColors.primaryA08 : Colors.transparent,
-      child: InkWell(
-        onTap: onTap,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-          child: Row(children: [
-            Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(color: roleColor.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(10), border: Border.all(color: roleColor.withValues(alpha: 0.25))),
-              alignment: Alignment.center,
-              child: Text(_initials(user.name), style: TextStyle(color: roleColor, fontWeight: FontWeight.w800, fontSize: 13)),
-            ),
-            const SizedBox(width: 10),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(user.name, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary), overflow: TextOverflow.ellipsis),
-                Text([user.email, if (user.role != null) user.role!.name].join(' · '), style: TextStyle(fontSize: 11, color: AppColors.primaryA55), overflow: TextOverflow.ellipsis),
-              ]),
-            ),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-              decoration: BoxDecoration(color: (isActive ? AppColors.green : AppColors.textDisabled).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.xl)),
-              child: Text(isActive ? 'Active' : 'Inactive', style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: isActive ? AppColors.green : AppColors.textDisabled)),
-            ),
-          ]),
+    return AppRefreshIndicator(
+      onRefresh: _load,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        child: ScaledDataTable(
+          columns: _columns,
+          rows: _users.map(_rowCells).toList(),
+          emptyMessage: _search.isNotEmpty ? 'No users match your search.' : 'No users yet.',
         ),
       ),
     );
   }
-}
 
-// ── Detail view ────────────────────────────────────────────────────────
-
-class _UserDetailView extends StatelessWidget {
-  final HospitalUserModel user;
-  final VoidCallback onEdit;
-  final VoidCallback onDelete;
-  final VoidCallback onToggleStatus;
-
-  const _UserDetailView({required this.user, required this.onEdit, required this.onDelete, required this.onToggleStatus});
-
-  String _initials(String name) {
-    final parts = name.trim().split(RegExp(r'\s+'));
-    if (parts.isEmpty || parts.first.isEmpty) return '?';
-    if (parts.length == 1) return parts[0].substring(0, parts[0].length >= 2 ? 2 : 1).toUpperCase();
-    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  Widget _buildPaginationFooter() {
+    final start = _perPage <= 0 ? (_total == 0 ? 0 : 1) : ((_currentPage - 1) * _perPage) + 1;
+    final end = _perPage <= 0 ? _total : (_currentPage * _perPage).clamp(0, _total);
+    return TablePaginationFooter(
+      total: _total,
+      currentPage: _currentPage,
+      lastPage: _lastPage,
+      start: start,
+      end: end,
+      onPrev: () { _currentPage--; _load(); },
+      onNext: () { _currentPage++; _load(); },
+    );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final u = user;
+  List<Widget> _rowCells(HospitalUserModel u) {
     final roleColor = u.role?.parsedColor ?? AppColors.primary;
     final isActive = u.status == 'active';
-    final isDoctor = u.role?.isDoctorRole == true;
-    final showPassword = PermissionService.instance.isSuper && (u.originalPassword?.isNotEmpty ?? false);
+    final canEdit = _canForUser(u, 'edit');
+    final canDelete = _canForUser(u, 'delete');
 
-    return SingleChildScrollView(
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              width: 64,
-              height: 64,
-              decoration: BoxDecoration(color: roleColor, borderRadius: BorderRadius.circular(16)),
-              alignment: Alignment.center,
-              child: Text(_initials(u.name), style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 24)),
-            ),
-            const SizedBox(width: 16),
-            Expanded(
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                Text(u.name, style: TextStyle(fontSize: 22, fontWeight: FontWeight.w800, color: AppColors.primary)),
-                const SizedBox(height: 6),
-                Wrap(spacing: 8, runSpacing: 6, children: [
-                  PressScaleWrapper(
-                    onTap: onToggleStatus,
-                    child: _chip(isActive ? 'Active' : 'Inactive', (isActive ? AppColors.green : AppColors.textDisabled).withValues(alpha: 0.12), isActive ? AppColors.green : AppColors.textDisabled),
-                  ),
-                  if (u.role != null) _roleChip(u.role!.name, roleColor),
-                  if (isDoctor) _chip(u.doctorPrefix != null ? 'Dr. ${u.doctorPrefix}' : 'Doctor', AppColors.blueA12, AppColors.blue),
-                ]),
-              ]),
-            ),
-            Row(children: [
-              IconButton(onPressed: onEdit, icon: const Icon(Icons.edit_outlined), tooltip: 'Edit', color: AppColors.primary),
-              IconButton(onPressed: onDelete, icon: const Icon(Icons.delete_outline_rounded), tooltip: 'Delete', color: AppColors.red),
-            ]),
-          ]),
-          const SizedBox(height: 20),
-          LayoutBuilder(builder: (context, c) {
-            final wide = c.maxWidth >= 560;
-            final contact = _infoCard(bg: AppColors.primaryA06, title: 'Contact', items: [
-              _InfoRow(Icons.email_outlined, 'Email', u.email),
-              _InfoRow(Icons.phone_outlined, 'Contact', u.contact.isNotEmpty ? u.contact : '—'),
-              _InfoRow(Icons.login_rounded, 'Last Login', u.lastLoginAt ?? 'Never'),
-              if (showPassword) _PasswordInfoRow(u.originalPassword!),
-            ]);
-            if (!isDoctor) return contact;
-            final doctor = _infoCard(bg: AppColors.blueA12, title: 'Doctor Details', items: [
-              _InfoRow(Icons.medical_information_outlined, 'Type', u.doctorType == 'secondary' ? 'Secondary (Optometrist)' : 'Primary (Ophthalmologist)'),
-              _InfoRow(Icons.badge_outlined, 'Registration No.', u.registrationNo ?? '—'),
-              _InfoRow(Icons.work_history_outlined, 'Experience', u.experienceYears != null ? '${u.experienceYears} yrs' : '—'),
-              // FOC disabled at client's request — see foc_screen.dart.
-              // _InfoRow(Icons.receipt_long_outlined, 'FOC Permission', u.focPermission ? 'Allowed' : 'Not allowed'),
-            ]);
-            if (!wide) return Column(children: [contact, const SizedBox(height: 12), doctor]);
-            return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: contact), const SizedBox(width: 12), Expanded(child: doctor)]);
-          }),
-        ],
-      ),
-    );
-  }
-
-  Widget _chip(String label, Color bg, Color fg) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.xl)),
-        child: Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: fg)),
-      );
-
-  Widget _roleChip(String label, Color color) => Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-        decoration: BoxDecoration(color: color.withValues(alpha: 0.10), borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: color.withValues(alpha: 0.25))),
-        child: Row(mainAxisSize: MainAxisSize.min, children: [
-          Container(width: 6, height: 6, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 5),
-          Text(label, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: color)),
-        ]),
-      );
-
-  Widget _infoCard({required Color bg, required String title, required List<Widget> items}) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.md)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.textSecondary, letterSpacing: 0.3)),
-        const SizedBox(height: 10),
-        ...items,
-      ]),
-    );
-  }
-}
-
-class _PasswordInfoRow extends StatelessWidget {
-  final String password;
-
-  const _PasswordInfoRow(this.password);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(children: [
-        Icon(Icons.key_rounded, size: 15, color: AppColors.textSecondary),
-        const SizedBox(width: 8),
-        Text('Password: ', style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
-        Expanded(child: Text(password, style: TextStyle(fontSize: 12, color: AppColors.textPrimary, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis)),
-        InkWell(
-          borderRadius: BorderRadius.circular(6),
-          onTap: () {
-            Clipboard.setData(ClipboardData(text: password));
-            showAppSnackBar(context, 'Password copied.', isSuccess: true);
-          },
-          child: Padding(
-            padding: const EdgeInsets.all(4),
-            child: Icon(Icons.copy_rounded, size: 14, color: AppColors.primaryA45),
-          ),
+    final cells = <Widget>[
+      Row(mainAxisSize: MainAxisSize.min, children: [
+        Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(color: roleColor.withValues(alpha: 0.14), borderRadius: BorderRadius.circular(8)),
+          alignment: Alignment.center,
+          child: Text(_initials(u.name), style: TextStyle(color: roleColor, fontWeight: FontWeight.w800, fontSize: 11)),
         ),
-      ]),
-    );
-  }
-}
-
-class _InfoRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final String value;
-
-  const _InfoRow(this.icon, this.label, this.value);
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(vertical: 5),
-      child: Row(children: [
-        Icon(icon, size: 15, color: AppColors.textSecondary),
         const SizedBox(width: 8),
-        Text('$label: ', style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
-        Expanded(child: Text(value, style: TextStyle(fontSize: 12, color: AppColors.textPrimary, fontWeight: FontWeight.w700), overflow: TextOverflow.ellipsis)),
+        Flexible(child: Text(u.name, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary))),
       ]),
+      Text(u.email, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      u.role != null
+          ? Row(mainAxisSize: MainAxisSize.min, children: [
+              Container(width: 7, height: 7, decoration: BoxDecoration(color: roleColor, shape: BoxShape.circle)),
+              const SizedBox(width: 6),
+              Flexible(child: Text(u.role!.name, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
+            ])
+          : const Text('—', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Text(u.contact.isNotEmpty ? u.contact : '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      if (_p.isSuper) _passwordCell(u),
+      _statusCell(isActive, canEdit, u),
+      Row(mainAxisSize: MainAxisSize.min, mainAxisAlignment: MainAxisAlignment.end, children: [
+        if (canEdit) TableIconAction(icon: Icons.edit_outlined, tooltip: 'Edit', kind: TableActionKind.edit, onTap: () => _openEdit(u)),
+        if (canEdit && canDelete) const SizedBox(width: 4),
+        if (canDelete) TableIconAction(icon: Icons.delete_outline_rounded, tooltip: 'Delete', kind: TableActionKind.delete, onTap: () => _confirmDelete(u)),
+      ]),
+    ];
+    return cells;
+  }
+
+  Widget _passwordCell(HospitalUserModel u) {
+    final pw = u.originalPassword;
+    if (pw == null || pw.isEmpty) {
+      return Text('Set via Edit', style: TextStyle(fontSize: 11, fontStyle: FontStyle.italic, color: AppColors.textDisabled));
+    }
+    return Row(mainAxisSize: MainAxisSize.min, children: [
+      Flexible(child: Text(pw, maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, fontFamily: 'monospace', color: AppColors.textPrimary))),
+      const SizedBox(width: 4),
+      InkWell(
+        borderRadius: BorderRadius.circular(6),
+        onTap: () {
+          Clipboard.setData(ClipboardData(text: pw));
+          showAppSnackBar(context, 'Password copied.', isSuccess: true);
+        },
+        child: Padding(padding: const EdgeInsets.all(2), child: Icon(Icons.copy_rounded, size: 13, color: AppColors.primaryA55)),
+      ),
+    ]);
+  }
+
+  Widget _statusCell(bool isActive, bool canEdit, HospitalUserModel u) {
+    final pill = Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: (isActive ? AppColors.green : AppColors.textDisabled).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.full)),
+      child: Text(isActive ? 'ACTIVE' : 'INACTIVE', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: isActive ? AppColors.green : AppColors.textDisabled, letterSpacing: 0.3)),
+    );
+    if (!canEdit) return Align(alignment: Alignment.centerLeft, child: pill);
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: InkWell(borderRadius: BorderRadius.circular(AppRadius.full), onTap: () => _toggleStatus(u), child: pill),
     );
   }
+
 }

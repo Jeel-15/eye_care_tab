@@ -7,5 +7,10 @@ void main() {
     await tester.pumpWidget(const EyeSaasTabletApp());
     await tester.pump();
     expect(find.byType(EyeSaasTabletApp), findsOneWidget);
+
+    // Splash schedules a 3s Future.delayed before navigating on; advance the
+    // test clock past it so the timer fires and clears before teardown,
+    // instead of tripping flutter_test's "timer still pending" assertion.
+    await tester.pump(const Duration(seconds: 4));
   });
 }

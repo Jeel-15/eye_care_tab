@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import '../utils/json_parse.dart';
 import 'base_service.dart';
 
 class OtChargeHeadItem {
@@ -18,10 +19,10 @@ class OtChargeHeadItem {
 
   factory OtChargeHeadItem.fromJson(Map<String, dynamic> j) =>
       OtChargeHeadItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         chargeName: j['charge_name'] as String? ?? '',
-        percentage: (j['percentage'] as num?)?.toDouble() ?? 0.0,
-        isActive: (j['is_active'] as bool?) ?? true,
+        percentage: jsonDouble(j['percentage']),
+        isActive: jsonBool(j['is_active'], fallback: true),
       );
 }
 

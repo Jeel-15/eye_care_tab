@@ -1,16 +1,46 @@
 // Models for GET /patients/{id}/history API response.
 
-Map<int, String> _parseDxMasters(Map<String, dynamic>? raw) {
+import '../utils/date_format.dart';
+
+/// PHP `json_encode([])` is a JSON array; empty assoc arrays become `[]` too.
+/// Flutter must tolerate both Map and List for object-shaped fields.
+Map<String, dynamic> _asMap(dynamic raw) {
+  if (raw is Map) {
+    return Map<String, dynamic>.from(
+      raw.map((k, v) => MapEntry(k.toString(), v)),
+    );
+  }
+  return {};
+}
+
+Map<int, String> _parseDxMasters(dynamic raw) {
   final dm = <int, String>{};
-  raw?.forEach((k, v) => dm[int.tryParse(k) ?? 0] = v as String);
+  if (raw is Map) {
+    raw.forEach((k, v) {
+      final id = k is int ? k : int.tryParse(k.toString()) ?? 0;
+      if (id > 0) dm[id] = v?.toString() ?? '';
+    });
+  } else if (raw is List) {
+    for (final item in raw) {
+      if (item is! Map) continue;
+      final id = (item['id'] as num?)?.toInt() ?? 0;
+      if (id > 0) {
+        dm[id] = (item['value'] ?? item['name'] ?? '').toString();
+      }
+    }
+  }
   return dm;
 }
 
-String _fmtDate(DateTime dt) {
-  const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-              'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-  return '${dt.day} ${m[dt.month - 1]} ${dt.year}';
+List<dynamic> _asList(dynamic raw) {
+  if (raw is List) return raw;
+  return const [];
 }
+
+// Hospital-timezone-aware — also used as the grouping key below, so an exam
+// done just after local midnight must land under the correct calendar day,
+// not the raw UTC day. See PATIENT_DATE_TIME_DISPLAY_AUDIT.md.
+String _fmtDate(DateTime dt) => toDisplayDate(toHospitalTime(dt));
 
 Map<String, List<ExamRecord>> _groupByDate(List<ExamRecord> exams) {
   final map = <String, List<ExamRecord>>{};
@@ -34,14 +64,16 @@ class ExamHistoryData {
   });
 
   factory ExamHistoryData.fromJson(Map<String, dynamic> j) => ExamHistoryData(
-        patient: PatientHistorySummary.fromJson(j['patient'] as Map<String, dynamic>),
-        exams: (j['exams'] as List?)
-                ?.map((e) => ExamRecord.fromJson(e as Map<String, dynamic>))
-                .toList() ?? [],
-        diagnosisMasters: _parseDxMasters(j['diagnosis_masters'] as Map<String, dynamic>?),
-        partnerHospitals: (j['partner_hospitals'] as List?)
-                ?.map((e) => PartnerHospitalHistory.fromJson(e as Map<String, dynamic>))
-                .toList() ?? [],
+        patient: PatientHistorySummary.fromJson(_asMap(j['patient'])),
+        exams: _asList(j['exams'])
+            .whereType<Map>()
+            .map((e) => ExamRecord.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+        diagnosisMasters: _parseDxMasters(j['diagnosis_masters']),
+        partnerHospitals: _asList(j['partner_hospitals'])
+            .whereType<Map>()
+            .map((e) => PartnerHospitalHistory.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
       );
 
   Map<String, List<ExamRecord>> get byDate => _groupByDate(exams);
@@ -63,13 +95,14 @@ class PartnerHospitalHistory {
   });
 
   factory PartnerHospitalHistory.fromJson(Map<String, dynamic> j) => PartnerHospitalHistory(
-        hospitalName:     (j['hospital_name']  as String?) ?? 'Partner Hospital',
-        hospitalCity:      j['hospital_city']  as String?,
-        hospitalState:     j['hospital_state'] as String?,
-        exams: (j['exams'] as List?)
-                ?.map((e) => ExamRecord.fromJson(e as Map<String, dynamic>))
-                .toList() ?? [],
-        diagnosisMasters: _parseDxMasters(j['diagnosis_masters'] as Map<String, dynamic>?),
+        hospitalName: (j['hospital_name'] as String?) ?? 'Partner Hospital',
+        hospitalCity: j['hospital_city'] as String?,
+        hospitalState: j['hospital_state'] as String?,
+        exams: _asList(j['exams'])
+            .whereType<Map>()
+            .map((e) => ExamRecord.fromJson(Map<String, dynamic>.from(e)))
+            .toList(),
+        diagnosisMasters: _parseDxMasters(j['diagnosis_masters']),
       );
 
   String get locationLine {
@@ -106,17 +139,17 @@ class PatientHistorySummary {
 
   factory PatientHistorySummary.fromJson(Map<String, dynamic> j) =>
       PatientHistorySummary(
-        id:           (j['id'] as num).toInt(),
-        name:         (j['name'] as String?) ?? '',
-        patientCode:  (j['patient_code'] as String?) ?? '',
-        gender:       j['gender'] as String?,
-        age:          j['age'] != null ? (j['age'] as num).toInt() : null,
-        contactNo:    j['contact_no'] as String?,
-        location:     j['location'] as String?,
-        createdAt:    j['created_at'] != null
+        id: (j['id'] as num?)?.toInt() ?? 0,
+        name: (j['name'] as String?) ?? '',
+        patientCode: (j['patient_code'] as String?) ?? '',
+        gender: j['gender'] as String?,
+        age: j['age'] != null ? (j['age'] as num).toInt() : null,
+        contactNo: j['contact_no'] as String?,
+        location: j['location'] as String?,
+        createdAt: j['created_at'] != null
             ? DateTime.tryParse(j['created_at'] as String)
             : null,
-        visitDays:    j['visit_days'] != null ? (j['visit_days'] as num).toInt() : 0,
+        visitDays: j['visit_days'] != null ? (j['visit_days'] as num).toInt() : 0,
       );
 }
 
@@ -140,41 +173,42 @@ class ExamRecord {
   bool get isPrimary => type == 'primary';
 
   factory ExamRecord.fromJson(Map<String, dynamic> j) => ExamRecord(
-        id:            (j['id'] as num).toInt(),
-        type:          (j['type'] as String?) ?? 'primary',
-        examinedAt:    DateTime.parse(j['examined_at'] as String),
-        doctorName:    j['doctor'] as String?,
-        examData:      (j['exam_data'] as Map<String, dynamic>?) ?? {},
-        prescriptions: (j['prescriptions'] as List?)
-                ?.map((p) => RxLine.fromJson(p as Map<String, dynamic>))
-                .toList() ??
-            [],
+        id: (j['id'] as num).toInt(),
+        type: (j['type'] as String?) ?? 'primary',
+        examinedAt: DateTime.parse(j['examined_at'] as String),
+        doctorName: j['doctor'] as String?,
+        // Empty exam_data may arrive as [] from PHP — treat as {}.
+        examData: _asMap(j['exam_data']),
+        prescriptions: _asList(j['prescriptions'])
+            .whereType<Map>()
+            .map((p) => RxLine.fromJson(Map<String, dynamic>.from(p)))
+            .toList(),
       );
 
   // ── exam_data accessors ────────────────────────────────────────────────────
 
-  Map<String, dynamic> get vision    => (examData['vision']  as Map?)?.cast() ?? {};
-  Map<String, dynamic> get pg        => (examData['pg']      as Map?)?.cast() ?? {};
-  Map<String, dynamic> get st        => (examData['st']      as Map?)?.cast() ?? {};
-  Map<String, dynamic> get nct       => (examData['nct']     as Map?)?.cast() ?? {};
-  Map<String, dynamic> get oe        => (examData['oe']      as Map?)?.cast() ?? {};
-  Map<String, dynamic> get fundus    => (examData['fundus']  as Map?)?.cast() ?? {};
-  List<dynamic>        get coRows    => (examData['co_rows']  as List?) ?? [];
-  List<dynamic>        get kcoRows   => (examData['kco_rows'] as List?) ?? [];
-  List<dynamic>        get diagnoses => (examData['diagnoses'] as List?) ?? [];
-  String               get advice    => (examData['advice'] as String?) ?? '';
-  String               get dilate    => (examData['dilate'] as String?) ?? 'No';
+  Map<String, dynamic> get vision => _asMap(examData['vision']);
+  Map<String, dynamic> get pg => _asMap(examData['pg']);
+  Map<String, dynamic> get st => _asMap(examData['st']);
+  Map<String, dynamic> get nct => _asMap(examData['nct']);
+  Map<String, dynamic> get oe => _asMap(examData['oe']);
+  Map<String, dynamic> get fundus => _asMap(examData['fundus']);
+  List<dynamic> get coRows => _asList(examData['co_rows']);
+  List<dynamic> get kcoRows => _asList(examData['kco_rows']);
+  List<dynamic> get diagnoses => _asList(examData['diagnoses']);
+  String get advice => (examData['advice'] as String?) ?? '';
+  String get dilate => (examData['dilate'] as String?) ?? 'No';
 
-  Map<String, dynamic> get pgRe => (pg['re'] as Map?)?.cast() ?? {};
-  Map<String, dynamic> get pgLe => (pg['le'] as Map?)?.cast() ?? {};
-  Map<String, dynamic> get stRe => (st['re'] as Map?)?.cast() ?? {};
-  Map<String, dynamic> get stLe => (st['le'] as Map?)?.cast() ?? {};
+  Map<String, dynamic> get pgRe => _asMap(pg['re']);
+  Map<String, dynamic> get pgLe => _asMap(pg['le']);
+  Map<String, dynamic> get stRe => _asMap(st['re']);
+  Map<String, dynamic> get stLe => _asMap(st['le']);
 
   List<String> get stBadges {
     final badges = <String>[];
-    if (st['bifocal']       == true) badges.add('Bifocal');
-    if (st['nd_separate']   == true) badges.add('N&D Separate');
-    if (st['progressive']   == true) badges.add('Progressive');
+    if (st['bifocal'] == true) badges.add('Bifocal');
+    if (st['nd_separate'] == true) badges.add('N&D Separate');
+    if (st['progressive'] == true) badges.add('Progressive');
     if (st['computer_uses'] == true) badges.add('Computer Uses');
     return badges;
   }
@@ -195,8 +229,8 @@ class RxLine {
 
   factory RxLine.fromJson(Map<String, dynamic> j) => RxLine(
         medicineName: (j['medicine_name'] as String?) ?? '-',
-        dosage:       (j['dosage']        as String?) ?? '-',
-        duration:     (j['duration']      as String?) ?? '-',
-        eye:          (j['eye']           as String?) ?? '-',
+        dosage: (j['dosage'] as String?) ?? '-',
+        duration: (j['duration'] as String?) ?? '-',
+        eye: (j['eye'] as String?) ?? '-',
       );
 }

@@ -5,7 +5,6 @@ import '../models/auth_models.dart';
 import '../services/access_guard.dart';
 import '../services/auth_service.dart';
 import '../services/base_service.dart' show PlanAccessBlockedException;
-import '../services/permission_service.dart';
 import '../utils/circular_reveal_route.dart';
 import '../widgets/pulsing_pupil_loader.dart';
 import 'tablet_shell.dart';
@@ -78,13 +77,20 @@ class _SplashScreenState extends State<SplashScreen>
 
     try {
       _sessionResult = await AuthService.instance.refreshSession();
+      _hospitalResult = await AuthService.instance.getStoredHospital();
     } on PlanAccessBlockedException {
       // AccessGuard has already navigated to the Access Restricted screen —
       // don't fall back to cached user data, that would let a blocked
       // account straight into the dashboard.
       _sessionResult = null;
     } catch (_) {
-      _sessionResult = await AuthService.instance.getStoredUser();
+      if (await AuthService.instance.isOfflineGraceValid()) {
+        _sessionResult = await AuthService.instance.getStoredUser();
+      } else {
+        await AuthService.instance.clearSession();
+        _sessionResult = null;
+        _hospitalResult = null;
+      }
     }
   }
 
@@ -101,7 +107,7 @@ class _SplashScreenState extends State<SplashScreen>
 
     if (_sessionResult != null && _hospitalResult != null) {
       _spinnerCtrl.forward();
-      PermissionService.instance.load(_sessionResult!.role);
+      AuthService.instance.applyPermissions(_sessionResult!);
       Navigator.of(context).pushReplacement(
         circularRevealRoute(
           page: TabletShell(user: _sessionResult!, hospital: _hospitalResult!),
@@ -226,9 +232,8 @@ class _SplashScreenState extends State<SplashScreen>
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    _headline('Eye-', 84, Colors.white),
-                    _headline('SaaS', 84, Colors.white),
-                    _headline('HMS', 112, AppColors.splashAccent.withValues(alpha: 0.90)),
+                    _headline('Eye', 84, Colors.white),
+                    _headline('nosis', 112, AppColors.splashAccent.withValues(alpha: 0.90)),
                     const SizedBox(height: 20),
                     Text(
                       'TABLET WORKSPACE',
@@ -259,7 +264,7 @@ class _SplashScreenState extends State<SplashScreen>
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      'POWERED BY EYE-SAAS',
+                      'POWERED BY EYENOSIS',
                       style: TextStyle(
                         fontSize: 10,
                         fontWeight: FontWeight.w900,

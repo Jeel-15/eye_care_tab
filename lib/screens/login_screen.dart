@@ -7,7 +7,6 @@ import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../services/auth_service.dart';
-import '../services/permission_service.dart';
 import 'tablet_shell.dart';
 // Super Admin access disabled in the apps at the client's request — see
 // _onLogoTap() below. Kept commented (not deleted) in case it's needed
@@ -168,7 +167,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
     if (!mounted) return;
 
     if (result.success) {
-      PermissionService.instance.load(result.user!.role);
+      AuthService.instance.applyPermissions(result.user!);
       Navigator.of(context).pushReplacement(
         PageRouteBuilder(
           pageBuilder: (_, _, _) => TabletShell(user: result.user!, hospital: result.hospital!),
@@ -652,7 +651,7 @@ class _LoginScreenState extends State<LoginScreen> with TickerProviderStateMixin
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 20),
         child: Text(
-          'Powered by Eye-SaaS HMS',
+          'Powered by Eyenosis',
           style: GoogleFonts.poppins(fontSize: 11, fontWeight: FontWeight.w600, color: AppColors.primaryA40),
         ),
       ),

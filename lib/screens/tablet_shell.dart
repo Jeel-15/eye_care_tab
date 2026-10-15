@@ -6,9 +6,11 @@ import '../constants/permissions.dart';
 import '../models/auth_models.dart';
 import '../services/auth_service.dart';
 import '../services/onboarding_service.dart';
+import '../services/patient_service.dart';
 import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/coming_soon_pane.dart';
+import '../widgets/permission_guard.dart';
 import '../widgets/secret_tap_area.dart';
 import '../utils/refreshable.dart';
 import 'clinical_queue_screen.dart';
@@ -37,6 +39,7 @@ import 'settings_screen.dart';
 import 'share_history_screen.dart';
 import 'users_screen.dart';
 import '../utils/medicines_tab.dart';
+import '../widgets/receptionist_quick_bubble.dart';
 import '../widgets/retry_network_image.dart';
 
 /// Tablet app shell — persistent left NavigationRail replacing mobile's
@@ -53,6 +56,7 @@ class TabletShell extends StatefulWidget {
 
 class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
   String _selected = 'dashboard';
+  late UserInfo _user;
   final _scaffoldKey = GlobalKey<ScaffoldState>();
 
   // Reused across whichever rail entry is currently shown — lets
@@ -60,7 +64,7 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
   // Only the small set of screens that implement Refreshable respond; all
   // others no-op safely (the `is` check below just fails).
   // See ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 4.
-  final GlobalKey _contentKey = GlobalKey();
+  GlobalKey _contentKey = GlobalKey();
   // null = follow width breakpoint automatically; set once the user taps the
   // rail's manual expand/collapse toggle, and sticks until toggled again.
   bool? _expandOverride;
@@ -68,13 +72,19 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
+    _user = widget.user;
+    receptionBubbleRefresh = () async {
+      final contentState = _contentKey.currentState;
+      if (contentState is Refreshable) await (contentState as Refreshable).refreshSilently();
+    };
     WidgetsBinding.instance.addObserver(this);
+    PermissionService.instance.addListener(_onPermissionsChanged);
     WidgetsBinding.instance.addPostFrameCallback((_) => _maybeShowOnboarding());
   }
 
   Future<void> _maybeShowOnboarding() async {
     if (!await OnboardingService.instance.shouldShow()) return;
-    final slides = OnboardingService.instance.slidesForCurrentUser(roleSlug: widget.user.role?.slug);
+    final slides = OnboardingService.instance.slidesForCurrentUser(roleSlug: _user.role?.slug);
     if (slides == null || !mounted) return;
     Navigator.of(context).push(
       PageRouteBuilder(
@@ -87,47 +97,73 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
 
   @override
   void dispose() {
+    if (receptionBubbleRefresh != null) receptionBubbleRefresh = null;
+    PermissionService.instance.removeListener(_onPermissionsChanged);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed) _silentRefresh();
-  }
-
-  Future<void> _silentRefresh() async {
-    try {
-      final user = await AuthService.instance.refreshSession();
-      if (!mounted) return;
-      if (user == null) {
-        PermissionService.instance.clear();
-        Navigator.of(context).pushReplacement(
-          MaterialPageRoute(builder: (_) => const LoginScreen()),
-        );
-        return;
-      }
-      PermissionService.instance.load(user.role);
-      final visibleIds = _visibleEntries().map((e) => e.id).toSet();
-      if (!visibleIds.contains(_selected)) {
-        setState(() => _selected = 'dashboard');
-      } else {
-        setState(() {});
-      }
-      // Reload the currently visible module's own data — the setState above
-      // only refreshes permissions/nav, not the screen's cached data.
-      final contentState = _contentKey.currentState;
-      if (contentState is Refreshable) (contentState as Refreshable).refreshSilently();
-    } catch (_) {
-      // Network error — keep current state, don't disrupt user
+    // Throttled + single-flight inside AuthService. refreshSession() routes a
+    // lost session to login itself; a network error keeps current permissions.
+    if (state == AppLifecycleState.resumed) {
+      AuthService.instance.refreshMe(fromResume: true);
     }
   }
 
-  bool get _isDoctor => widget.user.role?.slug == 'doctor';
-  bool get _isAdmin => widget.user.role?.slug == 'hospital_admin';
+  /// Runs whenever PermissionService actually changes (resume, a newer
+  /// X-Permissions-Version header, or a 403) — rebuilds rail + pane in place.
+  void _onPermissionsChanged() {
+    if (!mounted || !PermissionService.instance.isLoaded) return;
+    final user = AuthService.instance.activeUser;
+    if (user != null) {
+      // Doctor and non-doctor build different widgets for the same ids;
+      // a fresh key avoids reusing one GlobalKey across both types.
+      if (_user.role?.slug != user.role?.slug) {
+        _contentKey = GlobalKey();
+        _selected = 'dashboard';
+      }
+      _user = user;
+    }
+    if (!_canShow(_selected)) _selected = 'dashboard';
+
+    // Pane content is often const, so setState alone would not re-run the
+    // screens' permission checks.
+    setState(() {});
+    rebuildPermissionSubtree(context);
+
+    final contentState = _contentKey.currentState;
+    if (contentState is Refreshable) (contentState as Refreshable).refreshSilently();
+  }
+
+  /// Whether pane [id] is still reachable with the current permissions.
+  /// 'profile' and 'doctor_ot_list' are opened from the header / doctor
+  /// dashboard rather than the rail, so they are checked separately.
+  bool _canShow(String id) {
+    final p = PermissionService.instance;
+    switch (id) {
+      case 'dashboard':
+      case 'profile':
+        return true;
+      case 'doctor_ot_list':
+        return p.canAny([Perm.opdExamSecondary, Perm.otPatientList, Perm.otSurgeryRecommend]);
+      default:
+        return _visibleEntries().any((e) => e.id == id);
+    }
+  }
+
+  bool get _isDoctor => _user.role?.slug == 'doctor';
+  bool get _isAdmin => _user.role?.slug == 'hospital_admin';
 
   Future<void> _logout() async {
     PermissionService.instance.clear();
+    // Best-effort — don't let a stale patients cache linger for whichever
+    // account logs in next on this device. See
+    // ROLES_PERMISSIONS_DEEP_AUDIT_ROUND2.md Part B.
+    await PatientService.instance.clearCache(
+      PatientService.scopeFor(hospitalSlug: widget.hospital.slug, userId: _user.id),
+    );
     await AuthService.instance.logout();
     if (!mounted) return;
     Navigator.of(context).pushReplacement(
@@ -140,15 +176,62 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
   List<_RailGroup> _visibleGroups() {
     final p = PermissionService.instance;
 
+    // Web doctor shell (hospital/layouts/app.blade.php's `.black-menu-bar`,
+    // confirmed against the actual blade markup 2026-09-21): a top navbar
+    // with exactly 4 items in this order — Dashboards | Diagnosis Master |
+    // Medicine Master | History. Labels/order below match web verbatim,
+    // including "Dashboards" (plural, doctor-only — every other role's
+    // dashboard entry stays "Dashboard") and Medicine Master's exact
+    // web copy/order (Dosage, Medicine Type, Medicine Category, Mode,
+    // Medicines, Medicine Groups — web calls the route-of-admin field
+    // "Mode" specifically in this menu, singular labels throughout,
+    // NOT the same order/wording as the non-doctor "Medicines" section
+    // below). Web's "Diagnosis Master" is itself a 2-level flyout
+    // (C/O, KCO, H/O, O/E→10 sub-items, FUNDUS→2 sub-items, DIAGNOSIS,
+    // ADVICE) but every one of those already lives together as tiles on
+    // the existing Masters screen — kept as a single direct link here
+    // rather than rebuilding a 2-level flyout for content that's one tap
+    // away either way; better tablet UX, same destination/permissions.
+    if (_isDoctor) {
+      return [
+        _RailGroup(null, [
+          const _RailEntry('dashboard', Icons.grid_view_rounded, 'Dashboards'),
+        ]),
+        // Web gates both menus by @hasanypermission across all CRUD verbs
+        // (view|add|edit|manage), not view-only — canFeature() mirrors that;
+        // p.can(Perm.masterEyeExam)/(Perm.masterMedicines) would incorrectly
+        // hide the menu for a role granted only add/edit/manage.
+        if (p.canAccessEyeExamMasters)
+          _RailGroup(null, [
+            const _RailEntry('masters', Icons.remove_red_eye_rounded, 'Diagnosis Master'),
+          ]),
+        if (p.canFeature('master', 'medicine'))
+          _RailGroup('Medicine Master', [
+            const _RailEntry('dosages', Icons.science_rounded, 'Dosage'),
+            const _RailEntry('medicine_types', Icons.label_rounded, 'Medicine Type'),
+            const _RailEntry('medicine_categories', Icons.folder_rounded, 'Medicine Category'),
+            const _RailEntry('route_admin', Icons.alt_route_rounded, 'Mode'),
+            const _RailEntry('medicines', Icons.local_pharmacy_rounded, 'Medicines'),
+            const _RailEntry('medicine_groups', Icons.folder_special_rounded, 'Medicine Groups'),
+            const _RailEntry('ward_medicines', Icons.local_hospital_rounded, 'Ward Medicine'),
+          ], icon: Icons.medication_rounded),
+        if (p.can(Perm.opdExamHistory))
+          _RailGroup(null, [
+            const _RailEntry('share_history', Icons.history_rounded, 'History'),
+          ]),
+      ].where((g) => g.entries.isNotEmpty).toList();
+    }
+
     return [
       _RailGroup(null, [
         const _RailEntry('dashboard', Icons.grid_view_rounded, 'Dashboard'),
       ]),
       _RailGroup('OPD', [
-        if (p.can(Perm.opdPatientView)) ...[
+        // Patients: web gates by patient_view. Share History: exam_history.
+        if (p.can(Perm.opdPatientView))
           const _RailEntry('patients', Icons.people_alt_rounded, 'Patients'),
+        if (p.can(Perm.opdExamHistory))
           const _RailEntry('share_history', Icons.share_rounded, 'Share History'),
-        ],
         // FOC Requests disabled at client's request — see foc_screen.dart.
         // if (p.can(Perm.opdFocCreate) || p.can(Perm.opdFocAccept))
         //   const _RailEntry('foc', Icons.receipt_long_rounded, 'FOC Requests'),
@@ -171,24 +254,25 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
         // no separate "Doctor Dashboard" (the old OT Doctor role's surgery
         // recording was absorbed into OT Assistant, see
         // ot_assistant_dashboard_screen.dart).
-        if (p.can(Perm.otLensRecord) || p.can(Perm.otLensImplant) || p.can(Perm.otPatientList) || p.can(Perm.otSurgeryReady) || p.can(Perm.otSurgeryRecord))
+        // Matches web's $showAssistant exactly (4 keys — no otPatientList).
+        if (p.can(Perm.otLensRecord) || p.can(Perm.otLensImplant) || p.can(Perm.otSurgeryReady) || p.can(Perm.otSurgeryRecord))
           const _RailEntry('ot_assistant', Icons.handyman_rounded, 'Assistant Dashboard'),
-        if (p.can(Perm.otBillingManage))
+        // Matches web: ot_discharge_generate | ot_billing_manage | ot_bill_print | ot_certificate_print
+        if (p.canAny([Perm.otDischargeGenerate, Perm.otBillingManage, Perm.otBillPrint, Perm.otCertificatePrint]))
           const _RailEntry('ot_discharge', Icons.receipt_long_rounded, 'Discharge & Invoices'),
       ]),
       _RailGroup('Reports', [
-        if (!_isDoctor && p.can(Perm.reportsView))
+        // Web: OPD Reports = report_view|opd_reports_view; OT Reports = report_view.
+        if (p.can(Perm.reportsView) || p.can(Perm.opdReportsView))
           const _RailEntry('reports', Icons.bar_chart_rounded, 'Reports'),
-        // Was reachable only via a dashboard quick-action tile — web lists
-        // OPD Reports and OT Reports as sibling sidebar items, so this rail
-        // needs its own entry too. Gated the same way 'reports' above is.
-        if (!_isDoctor && p.can(Perm.reportsView) && p.canModule('ot'))
+        if (p.can(Perm.reportsView) || p.can(Perm.otReportsView))
           const _RailEntry('ot_reports', Icons.insights_rounded, 'OT Reports'),
       ]),
       _RailGroup('Medicines', [
-        if (p.can(Perm.masterMedicines)) ...[
+        if (p.canFeature('master', 'medicine')) ...[
           const _RailEntry('medicines', Icons.local_pharmacy_rounded, 'Medicines'),
           const _RailEntry('medicine_groups', Icons.folder_special_rounded, 'Medicine Groups'),
+          const _RailEntry('ward_medicines', Icons.local_hospital_rounded, 'Ward Medicine'),
           const _RailEntry('medicine_types', Icons.label_rounded, 'Medicine Types'),
           const _RailEntry('medicine_categories', Icons.folder_rounded, 'Medicine Categories'),
           const _RailEntry('route_admin', Icons.alt_route_rounded, 'Route of Admin.'),
@@ -196,13 +280,16 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
         ],
       ]),
       _RailGroup('Config', [
-        if (p.can(Perm.masterCaseTypes) || p.can(Perm.masterEyeExam) || p.can(Perm.masterLocations))
+        if (p.canAccessMasters)
           const _RailEntry('masters', Icons.tune_rounded, 'Masters'),
-        if (!_isDoctor && p.can(Perm.settingsHospital))
+        if (p.canFeature('setting', 'hospital'))
           const _RailEntry('settings', Icons.settings_outlined, 'Settings'),
-        if (!_isDoctor && p.can(Perm.masterRoles))
+        // Matches web's plain @haspermission('master.roles') — no doctor exclusion.
+        if (p.canFeature('master', 'role'))
           const _RailEntry('roles', Icons.admin_panel_settings_rounded, 'Roles & Permissions'),
-        if (!_isDoctor && (p.can(Perm.masterDoctors) || p.can(Perm.masterReceptions) || p.can(Perm.masterOtStaff)))
+        if (p.canFeature('master', 'user_doctor') ||
+            p.canFeature('master', 'user_reception') ||
+            p.canFeature('master', 'user_ot_staff'))
           const _RailEntry('users', Icons.manage_accounts_rounded, 'Users'),
       ]),
     ].where((g) => g.entries.isNotEmpty).toList();
@@ -214,16 +301,16 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
     switch (id) {
       case 'dashboard':
         return _isDoctor
-            ? DoctorDashboardScreen(key: _contentKey, user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id))
-            : DashboardScreen(key: _contentKey, user: widget.user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id));
+            ? DoctorDashboardScreen(key: _contentKey, user: _user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id))
+            : DashboardScreen(key: _contentKey, user: _user, hospital: widget.hospital, onNavigate: (id) => setState(() => _selected = id));
       case 'doctor_ot_list':
         return const DoctorOtListScreen();
       case 'patients':
-        return PatientsScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
+        return PatientsScreen(key: _contentKey, user: _user, hospital: widget.hospital);
       case 'queue':
-        return ClinicalQueueScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
+        return ClinicalQueueScreen(key: _contentKey, user: _user, hospital: widget.hospital);
       case 'masters':
-        return const MastersScreen();
+        return MastersScreen(eyeExamOnly: _isDoctor);
       case 'ot_appointments':
         return const OtAppointmentListScreen();
       case 'ot_dashboard':
@@ -233,7 +320,7 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
       case 'ot_ward':
         return const OtWardQueueScreen();
       case 'ot_assistant':
-        return OtAssistantDashboardScreen(user: widget.user);
+        return OtAssistantDashboardScreen(user: _user);
       case 'ot_billing':
         return const OtAccountantDashboardScreen();
       case 'ot_discharge':
@@ -244,6 +331,8 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
         return const MedicinesScreen(initialTab: MedicinesTab.medicines);
       case 'medicine_groups':
         return const MedicinesScreen(initialTab: MedicinesTab.groups);
+      case 'ward_medicines':
+        return const MedicinesScreen(initialTab: MedicinesTab.ward);
       case 'medicine_types':
         return const MedicinesScreen(initialTab: MedicinesTab.types);
       case 'medicine_categories':
@@ -253,20 +342,20 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
       case 'dosages':
         return const MedicinesScreen(initialTab: MedicinesTab.dosages);
       case 'reports':
-        return ReportsScreen(key: _contentKey, user: widget.user, hospital: widget.hospital);
+        return ReportsScreen(key: _contentKey, user: _user, hospital: widget.hospital);
       case 'users':
-        return UsersScreen(user: widget.user, hospital: widget.hospital);
+        return UsersScreen(user: _user, hospital: widget.hospital);
       case 'roles':
-        return RolesScreen(user: widget.user, hospital: widget.hospital);
+        return RolesScreen(user: _user, hospital: widget.hospital);
       // FOC Requests disabled at client's request — see foc_screen.dart.
       // case 'foc':
       //   return FocScreen(user: widget.user, hospital: widget.hospital);
       case 'settings':
-        return SettingsScreen(user: widget.user, hospital: widget.hospital);
+        return SettingsScreen(user: _user, hospital: widget.hospital);
       case 'profile':
-        return ProfileScreen(user: widget.user, hospital: widget.hospital);
+        return ProfileScreen(user: _user, hospital: widget.hospital);
       case 'share_history':
-        return ShareHistoryScreen(user: widget.user, hospital: widget.hospital);
+        return ShareHistoryScreen(user: _user, hospital: widget.hospital);
       default:
         final entry = _visibleEntries().where((e) => e.id == id).firstOrNull;
         return ComingSoonPane(
@@ -287,7 +376,15 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
         builder: (context, constraints) {
           final width = constraints.maxWidth;
           if (AppBreakpoints.isCompact(width)) {
+            // Doctor keeps the same drawer fallback as every other role at
+            // narrow/portrait width — web has no defined responsive
+            // behavior for its navbar at all (confirmed: it just wraps),
+            // so there's no web pattern to mirror here; the existing
+            // drawer is already the sensible tablet-appropriate fallback.
             return _buildCompactShell();
+          }
+          if (_isDoctor) {
+            return _buildDoctorTopNavShell();
           }
           final extended = _expandOverride ?? AppBreakpoints.isExpanded(width);
           return _buildRailShell(extended: extended);
@@ -296,19 +393,66 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
     );
   }
 
+  // ── Doctor-only — one top bar instead of the left rail ───────────────────
+
+  Widget _buildDoctorTopNavShell() {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _DoctorTopBar(
+              hospital: widget.hospital,
+              user: _user,
+              groups: _visibleGroups(),
+              selected: _selected,
+              onSelect: (id) => setState(() => _selected = id),
+              onProfile: () => setState(() => _selected = 'profile'),
+              onLogout: _logout,
+            ),
+            Expanded(
+              child: Padding(
+                padding: const EdgeInsets.all(24),
+                child: AnimatedSwitcher(
+                  duration: const Duration(milliseconds: 220),
+                  layoutBuilder: topAlignedSwitcherLayout,
+                  child: KeyedSubtree(
+                    key: ValueKey(_selected),
+                    child: _buildContent(_selected),
+                  ),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // ── Expanded / Medium — persistent rail ───────────────────────────────────
 
   Widget _buildRailShell({required bool extended}) {
+    final railWidth = extended ? TabletSpacing.railWidthExpanded : TabletSpacing.railWidthCollapsed;
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: Row(
+      body: Stack(
+        children: [
+          Row(
+        // Without this, the Row's default CrossAxisAlignment.center gives
+        // the content Expanded a loose height and then vertically centers
+        // whatever comes out — invisible when a screen's content happens to
+        // fill the viewport, but any screen shorter than full height (e.g.
+        // the doctor dashboard with few queue patients) floats in the
+        // middle with a blank gap above it instead of starting at the top.
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           _TabletRail(
             extended: extended,
             onToggleExpand: () => setState(() => _expandOverride = !extended),
             groups: _visibleGroups(),
             selected: _selected,
-            user: widget.user,
+            user: _user,
             hospital: widget.hospital,
             isAdmin: _isAdmin,
             onSelect: (id) => setState(() => _selected = id),
@@ -327,6 +471,22 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
                     child: _buildContent(_selected),
                   ),
                 ),
+              ),
+            ),
+          ),
+        ],
+          ),
+          AnimatedPositioned(
+            duration: const Duration(milliseconds: 260),
+            curve: Curves.easeOutCubic,
+            left: railWidth - 16,
+            top: 0,
+            bottom: 0,
+            width: 32,
+            child: Center(
+              child: _RailEdgeToggle(
+                extended: extended,
+                onTap: () => setState(() => _expandOverride = !extended),
               ),
             ),
           ),
@@ -352,7 +512,7 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
           extended: true,
           groups: _visibleGroups(),
           selected: _selected,
-          user: widget.user,
+          user: _user,
           hospital: widget.hospital,
           isAdmin: _isAdmin,
           onSelect: (id) {
@@ -390,7 +550,11 @@ class _RailEntry {
 class _RailGroup {
   final String? label;
   final List<_RailEntry> entries;
-  const _RailGroup(this.label, this.entries);
+  // Only read by the doctor top bar's dropdown buttons (_DoctorTopBar) —
+  // the left rail never shows a group-level icon, so this is null/unused
+  // for every non-doctor group.
+  final IconData? icon;
+  const _RailGroup(this.label, this.entries, {this.icon});
 }
 
 extension _FirstOrNull<T> on Iterable<T> {
@@ -398,6 +562,34 @@ extension _FirstOrNull<T> on Iterable<T> {
 }
 
 // ── Rail widget ──────────────────────────────────────────────────────────
+
+class _RailEdgeToggle extends StatelessWidget {
+  final bool extended;
+  final VoidCallback onTap;
+
+  const _RailEdgeToggle({required this.extended, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return Tooltip(
+      message: extended ? 'Collapse sidebar' : 'Expand sidebar',
+      child: Material(
+        color: Colors.white,
+        elevation: 3,
+        shadowColor: const Color(0x33000000),
+        shape: CircleBorder(side: BorderSide(color: AppColors.primary.withValues(alpha: 0.18))),
+        child: InkWell(
+          customBorder: const CircleBorder(),
+          onTap: onTap,
+          child: Padding(
+            padding: const EdgeInsets.all(4),
+            child: Icon(extended ? Icons.chevron_left_rounded : Icons.chevron_right_rounded, size: 18, color: AppColors.primary),
+          ),
+        ),
+      ),
+    );
+  }
+}
 
 class _TabletRail extends StatelessWidget {
   final bool extended;
@@ -442,7 +634,6 @@ class _TabletRail extends StatelessWidget {
         child: Column(
           children: [
             _buildHeader(context),
-            if (onToggleExpand != null) _buildToggle(),
             const SizedBox(height: 8),
             Expanded(
               child: ListView(
@@ -473,30 +664,6 @@ class _TabletRail extends StatelessWidget {
         if (v < -250 && extended) onToggleExpand!();
       },
       child: rail,
-    );
-  }
-
-  Widget _buildToggle() {
-    return Padding(
-      padding: EdgeInsets.symmetric(vertical: 6, horizontal: extended ? 10 : 0),
-      child: Align(
-        alignment: extended ? Alignment.centerRight : Alignment.center,
-        child: Tooltip(
-          message: extended ? 'Collapse sidebar' : 'Expand sidebar',
-          child: Material(
-            color: AppColors.primaryA06,
-            shape: const CircleBorder(),
-            child: InkWell(
-              customBorder: const CircleBorder(),
-              onTap: onToggleExpand,
-              child: Padding(
-                padding: const EdgeInsets.all(5),
-                child: Icon(extended ? Icons.chevron_left_rounded : Icons.chevron_right_rounded, size: 18, color: AppColors.primary),
-              ),
-            ),
-          ),
-        ),
-      ),
     );
   }
 
@@ -541,62 +708,7 @@ class _TabletRail extends StatelessWidget {
     );
   }
 
-  /// Sidebar brand mark — mirrors web's rule: the bg-removed logo (with a
-  /// white-silhouette tint) is only used when style is 'white' and a nobg
-  /// version exists; 'original_blur' shows the plain logo in a frosted box;
-  /// hospitals with no logo at all keep the initials avatar unchanged.
-  Widget _initialsBadge(String initials) {
-    // Read the live session cache, not the `hospital` constructor param —
-    // that's a snapshot frozen at login/launch and never updates in-place
-    // when a logo is changed elsewhere mid-session (same reasoning as
-    // currentCurrencySymbol() in currency_format.dart).
-    final live = AuthService.instance.cachedHospital;
-    final logoUrl = live?.logoUrl ?? hospital.logoUrl;
-    final logoNobgUrl = live?.logoNobgUrl ?? hospital.logoNobgUrl;
-    final logoSidebarStyle = live?.logoSidebarStyle ?? hospital.logoSidebarStyle;
-
-    if (logoUrl.isEmpty) {
-      return Container(
-        width: 38,
-        height: 38,
-        decoration: BoxDecoration(
-          color: Colors.white.withValues(alpha: 0.18),
-          borderRadius: BorderRadius.circular(10),
-        ),
-        alignment: Alignment.center,
-        child: Text(initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13)),
-      );
-    }
-
-    final useNobg = logoSidebarStyle == 'white' && logoNobgUrl.isNotEmpty;
-    final logoSrc = useNobg ? logoNobgUrl : logoUrl;
-    final image = RetryNetworkImage(
-      url: logoSrc,
-      fit: BoxFit.contain,
-      fallbackBuilder: (_) => Text(initials, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w900, fontSize: 13)),
-    );
-
-    if (logoSidebarStyle == 'original_blur') {
-      return Container(
-        width: 38,
-        height: 38,
-        padding: const EdgeInsets.all(6),
-        decoration: BoxDecoration(color: Colors.white.withValues(alpha: 0.20), borderRadius: BorderRadius.circular(10)),
-        child: image,
-      );
-    }
-
-    return SizedBox(
-      width: 38,
-      height: 38,
-      child: Padding(
-        padding: const EdgeInsets.all(4),
-        child: useNobg
-            ? ColorFiltered(colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcATop), child: image)
-            : image,
-      ),
-    );
-  }
+  Widget _initialsBadge(String initials) => _HospitalLogoBadge(hospital: hospital, initials: initials);
 
   Widget _sectionLabel(String label) => Padding(
         padding: const EdgeInsets.fromLTRB(12, 14, 12, 6),
@@ -723,10 +835,276 @@ class _TabletRail extends StatelessWidget {
         child: Text(initials, style: TextStyle(fontSize: 11, fontWeight: FontWeight.w900, color: AppColors.primary)),
       );
 
-  String _userInitials(String name) {
-    final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
-    if (parts.isEmpty) return '?';
-    if (parts.length == 1) return parts[0].substring(0, parts[0].length >= 2 ? 2 : 1).toUpperCase();
-    return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+  String _userInitials(String name) => _initialsOf(name);
+}
+
+/// Shared by both the left rail's footer avatar and the doctor top-nav's
+/// avatar menu — one implementation instead of two copies of the same
+/// "first letter(s) of name" rule.
+String _initialsOf(String name) {
+  final parts = name.trim().split(RegExp(r'\s+')).where((p) => p.isNotEmpty).toList();
+  if (parts.isEmpty) return '?';
+  if (parts.length == 1) return parts[0].substring(0, parts[0].length >= 2 ? 2 : 1).toUpperCase();
+  return '${parts[0][0]}${parts[1][0]}'.toUpperCase();
+}
+
+// ── Hospital brand mark — shared by the left rail's header and the doctor
+// top-nav's header. Mirrors web's rule: the bg-removed logo (with a
+// white-silhouette tint) is only used when style is 'white' and a nobg
+// version exists AND the badge sits on a dark background ([onDark]); on a
+// light background the plain logo renders as-is (forcing it white would be
+// invisible). 'original_blur' shows the plain logo in a frosted box;
+// hospitals with no logo at all keep an initials avatar. ──────────────────
+
+class _HospitalLogoBadge extends StatelessWidget {
+  static const double _size = 38;
+
+  final HospitalInfo hospital;
+  final String initials;
+  final bool onDark;
+
+  const _HospitalLogoBadge({required this.hospital, required this.initials, this.onDark = true});
+
+  @override
+  Widget build(BuildContext context) {
+    // Read the live session cache, not the `hospital` constructor param —
+    // that's a snapshot frozen at login/launch and never updates in-place
+    // when a logo is changed elsewhere mid-session (same reasoning as
+    // currentCurrencySymbol() in currency_format.dart).
+    final live = AuthService.instance.cachedHospital;
+    final logoUrl = live?.logoUrl ?? hospital.logoUrl;
+    final logoNobgUrl = live?.logoNobgUrl ?? hospital.logoNobgUrl;
+    final logoSidebarStyle = live?.logoSidebarStyle ?? hospital.logoSidebarStyle;
+
+    final fallbackBg = onDark ? Colors.white.withValues(alpha: 0.18) : AppColors.primaryA10;
+    final fallbackFg = onDark ? Colors.white : AppColors.primary;
+
+    if (logoUrl.isEmpty) {
+      return Container(
+        width: _size,
+        height: _size,
+        decoration: BoxDecoration(color: fallbackBg, borderRadius: BorderRadius.circular(10)),
+        alignment: Alignment.center,
+        child: Text(initials, style: TextStyle(color: fallbackFg, fontWeight: FontWeight.w900, fontSize: 13)),
+      );
+    }
+
+    final useNobg = onDark && logoSidebarStyle == 'white' && logoNobgUrl.isNotEmpty;
+    final logoSrc = useNobg ? logoNobgUrl : logoUrl;
+    final image = RetryNetworkImage(
+      url: logoSrc,
+      fit: BoxFit.contain,
+      fallbackBuilder: (_) => Text(initials, style: TextStyle(color: fallbackFg, fontWeight: FontWeight.w900, fontSize: 13)),
+    );
+
+    if (logoSidebarStyle == 'original_blur') {
+      return Container(
+        width: _size,
+        height: _size,
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(color: onDark ? Colors.white.withValues(alpha: 0.20) : AppColors.primaryA08, borderRadius: BorderRadius.circular(10)),
+        child: image,
+      );
+    }
+
+    return SizedBox(
+      width: _size,
+      height: _size,
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: useNobg
+            ? ColorFiltered(colorFilter: const ColorFilter.mode(Colors.white, BlendMode.srcATop), child: image)
+            : image,
+      ),
+    );
+  }
+}
+
+// ── Doctor top bar — one navy row: hospital, page links, doctor menu.
+// Replaces the old white hospital strip stacked on a separate navy menu,
+// so the dashboard content gets that height back. Other roles keep the rail.
+
+class _DoctorTopBar extends StatelessWidget {
+  final HospitalInfo hospital;
+  final UserInfo user;
+  final List<_RailGroup> groups;
+  final String selected;
+  final void Function(String id) onSelect;
+  final VoidCallback onProfile;
+  final VoidCallback onLogout;
+
+  const _DoctorTopBar({
+    required this.hospital,
+    required this.user,
+    required this.groups,
+    required this.selected,
+    required this.onSelect,
+    required this.onProfile,
+    required this.onLogout,
+  });
+
+  bool _groupActive(_RailGroup g) => g.entries.any((e) => e.id == selected);
+
+  @override
+  Widget build(BuildContext context) {
+    final initials = hospital.name.isNotEmpty
+        ? hospital.name.trim().split(RegExp(r'\s+')).map((w) => w[0]).take(2).join().toUpperCase()
+        : '?';
+    return Container(
+      color: AppColors.primary,
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Row(children: [
+        _HospitalLogoBadge(hospital: hospital, initials: initials, onDark: true),
+        const SizedBox(width: 10),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 220),
+          child: Text(
+            hospital.name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w800, fontSize: 15),
+          ),
+        ),
+        const SizedBox(width: 24),
+        Expanded(
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              return SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: ConstrainedBox(
+                  constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      for (final g in groups)
+                        if (g.entries.length == 1 && g.label == null) _menuLink(g.entries.first) else _menuDropdown(g),
+                    ],
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+        const SizedBox(width: 24),
+        _DoctorAvatarMenu(user: user, onDark: true, onProfile: onProfile, onLogout: onLogout),
+      ]),
+    );
+  }
+
+  Widget _menuLink(_RailEntry e) {
+    final active = selected == e.id;
+    return InkWell(
+      onTap: () => onSelect(e.id),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: active ? Colors.white : Colors.transparent, width: 3))),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(e.icon, size: 16, color: Colors.white),
+          const SizedBox(width: 8),
+          Text(e.label, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+        ]),
+      ),
+    );
+  }
+
+  Widget _menuDropdown(_RailGroup g) {
+    final active = _groupActive(g);
+    return PopupMenuButton<String>(
+      tooltip: '',
+      offset: const Offset(0, 48),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+      onSelected: onSelect,
+      itemBuilder: (context) => [
+        for (final e in g.entries)
+          PopupMenuItem(
+            value: e.id,
+            child: Row(mainAxisSize: MainAxisSize.min, children: [
+              Icon(e.icon, size: 16, color: selected == e.id ? AppColors.primary : AppColors.textSecondary),
+              const SizedBox(width: 10),
+              Text(e.label, style: TextStyle(fontWeight: selected == e.id ? FontWeight.w800 : FontWeight.w600, color: selected == e.id ? AppColors.primary : AppColors.textPrimary)),
+            ]),
+          ),
+      ],
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 16),
+        decoration: BoxDecoration(border: Border(bottom: BorderSide(color: active ? Colors.white : Colors.transparent, width: 3))),
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          Icon(g.icon ?? Icons.menu_rounded, size: 16, color: Colors.white),
+          const SizedBox(width: 8),
+          Text(g.label!, style: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700)),
+          const SizedBox(width: 2),
+          const Icon(Icons.keyboard_arrow_down_rounded, size: 16, color: Colors.white),
+        ]),
+      ),
+    );
+  }
+}
+
+class _DoctorAvatarMenu extends StatelessWidget {
+  final UserInfo user;
+  final VoidCallback onProfile;
+  final VoidCallback onLogout;
+  final bool onDark;
+
+  const _DoctorAvatarMenu({required this.user, required this.onProfile, required this.onLogout, this.onDark = false});
+
+  @override
+  Widget build(BuildContext context) {
+    // Mirrors web's user-dropdown exactly: My Profile, a divider, then
+    // Logout — nothing else (no settings/notifications in this menu).
+    return PopupMenuButton<String>(
+      tooltip: '',
+      offset: const Offset(0, 44),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+      onSelected: (v) {
+        if (v == 'profile') onProfile();
+        if (v == 'logout') onLogout();
+      },
+      itemBuilder: (context) => [
+        PopupMenuItem(
+          value: 'profile',
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.person_outline_rounded, size: 18, color: AppColors.primary),
+            const SizedBox(width: 10),
+            const Text('My Profile'),
+          ]),
+        ),
+        const PopupMenuDivider(height: 1),
+        PopupMenuItem(
+          value: 'logout',
+          child: Row(mainAxisSize: MainAxisSize.min, children: [
+            Icon(Icons.logout_rounded, size: 18, color: AppColors.red),
+            const SizedBox(width: 10),
+            Text('Logout', style: TextStyle(color: AppColors.red, fontWeight: FontWeight.w700)),
+          ]),
+        ),
+      ],
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(color: onDark ? Colors.white : AppColors.primary, shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: Icon(Icons.person_rounded, color: onDark ? AppColors.primary : Colors.white, size: 18),
+          ),
+          const SizedBox(width: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 140),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(user.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: onDark ? Colors.white : AppColors.primary)),
+                if (user.role != null)
+                  Text(user.role!.name.toUpperCase(), maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: onDark ? Colors.white.withValues(alpha: 0.75) : AppColors.textSecondary, letterSpacing: 0.4)),
+              ],
+            ),
+          ),
+          Icon(Icons.keyboard_arrow_down_rounded, size: 18, color: onDark ? Colors.white : AppColors.textSecondary),
+        ],
+      ),
+    );
   }
 }

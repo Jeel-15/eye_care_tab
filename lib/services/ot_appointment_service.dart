@@ -14,18 +14,24 @@ class OtAppointmentService with AuthenticatedService {
 
   Map<String, dynamic> _parse(http.Response res) => parseApiResponse(res);
 
-  Future<({List<OtAppointmentItem> items, OtPaginationMeta meta})> list({
-    String status = 'all',
-    String? date,
+  // Web pull 2026-10-07 — the 16-stage status filter was fully replaced by a
+  // simple Booked/Completed tab system (new `ot_appointment` role's own
+  // desk). `tab` is now the server-side filter itself (`canWalkIn()` vs
+  // `converted_patient_id` truthy), not a client-side status match.
+  Future<({List<OtAppointmentItem> items, OtPaginationMeta meta, String activeTab, int bookedCount, int completedCount, String fromDate, String toDate})> list({
+    String tab = 'booked',
+    String? fromDate,
+    String? toDate,
     String? search,
     int page = 1,
     int perPage = 25,
   }) async {
     final qp = {
-      'status': status,
+      'tab': tab,
       'page': '$page',
       'per_page': '$perPage',
-      if (date != null && date.isNotEmpty) 'date': date,
+      if (fromDate != null && fromDate.isNotEmpty) 'from_date': fromDate,
+      if (toDate != null && toDate.isNotEmpty) 'to_date': toDate,
       if (search != null && search.isNotEmpty) 'search': search,
     };
     final uri = Uri.parse('$_base/ot/appointments').replace(queryParameters: qp);
@@ -33,7 +39,16 @@ class OtAppointmentService with AuthenticatedService {
     final body = _parse(res);
     final data = body['data'] as Map<String, dynamic>;
     final items = (data['data'] as List? ?? []).map((e) => OtAppointmentItem.fromJson(e as Map<String, dynamic>)).toList();
-    return (items: items, meta: OtPaginationMeta.fromJson(data));
+    final meta = body['meta'] as Map<String, dynamic>? ?? const {};
+    return (
+      items: items,
+      meta: OtPaginationMeta.fromJson(data),
+      activeTab: meta['active_tab'] as String? ?? tab,
+      bookedCount: (meta['booked_count'] as num?)?.toInt() ?? 0,
+      completedCount: (meta['completed_count'] as num?)?.toInt() ?? 0,
+      fromDate: meta['from_date'] as String? ?? '',
+      toDate: meta['to_date'] as String? ?? '',
+    );
   }
 
   Future<OtAppointmentFormData> fetchFormData() async {
@@ -58,23 +73,18 @@ class OtAppointmentService with AuthenticatedService {
     return OtAppointmentItem.fromJson(parsed['data'] as Map<String, dynamic>);
   }
 
-  Future<String> confirm(int id) async {
-    final res = await http.post(Uri.parse('$_base/ot/appointments/$id/confirm'), headers: await headers).timeout(AppConfig.requestTimeout);
-    final body = _parse(res);
-    return (body['data'] as Map<String, dynamic>)['status'] as String? ?? '';
-  }
-
-  Future<String> cancel(int id) async {
-    final res = await http.post(Uri.parse('$_base/ot/appointments/$id/cancel'), headers: await headers).timeout(AppConfig.requestTimeout);
-    final body = _parse(res);
-    return (body['data'] as Map<String, dynamic>)['status'] as String? ?? '';
-  }
-
   Future<OtAppointmentSearchResult> search(String q) async {
     final uri = Uri.parse('$_base/ot/appointments/search').replace(queryParameters: {'q': q});
     final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return OtAppointmentSearchResult.fromJson(body['data'] as Map<String, dynamic>);
+  }
+
+  Future<void> destroy(int id) async {
+    final res = await http
+        .delete(Uri.parse('$_base/ot/appointments/$id'), headers: await headers)
+        .timeout(AppConfig.requestTimeout);
+    _parse(res);
   }
 
   Future<List<OtSlotAppointmentConflict>> slotAppointments({required String date, required String time, int? excludeId}) async {

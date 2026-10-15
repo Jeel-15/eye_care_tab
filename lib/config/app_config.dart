@@ -25,7 +25,7 @@ class AppConfig {
   // Slug is auto-discovered at login via GET /api/v1/find-hospital
   // and restored from SharedPreferences on app restart.
   static String slug = '';      
-  static String hospitalName = 'Eye-SaaS HMS';
+  static String hospitalName = 'Eyenosis';
 
   static String get hospitalApiUrl => '$apiBaseUrl/$slug';
 

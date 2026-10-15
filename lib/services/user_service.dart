@@ -13,6 +13,10 @@ class UserRole {
   final String color;
   final bool isSuper;
   final bool isDoctorRole;
+  /// Backend-computed user-management category (`doctor` / `reception` /
+  /// `ot_staff`) that `UserApiController` authorizes against. Null on older
+  /// API builds.
+  final String? userCategory;
 
   const UserRole({
     required this.id,
@@ -21,6 +25,7 @@ class UserRole {
     required this.color,
     required this.isSuper,
     required this.isDoctorRole,
+    this.userCategory,
   });
 
   factory UserRole.fromJson(Map<String, dynamic> j) => UserRole(
@@ -30,6 +35,7 @@ class UserRole {
         color:        j['color'] as String? ?? '#1B4F72',
         isSuper:      j['is_super'] == true,
         isDoctorRole: j['is_doctor_role'] == true,
+        userCategory: j['user_category'] as String?,
       );
 
   // Parsed once at deserialization — not on every card build()
@@ -59,6 +65,10 @@ class HospitalUserModel {
   final int? experienceYears;
   final String? signatureUrl;
   final String? profilePhotoUrl;
+  // Doctor-only — the OT Assistant auto-assigned when Ward marks this
+  // doctor's patient "Ready for OT" (web pull 2026-10-12).
+  final int? defaultOtAssistantId;
+  final String? defaultOtAssistantName;
   // Plain-text password — only ever present when the requesting user is a
   // Hospital Admin (backend gates this). See
   // USER_PASSWORD_VISIBILITY_PARITY_PLAN.md.
@@ -83,6 +93,8 @@ class HospitalUserModel {
     this.experienceYears,
     this.signatureUrl,
     this.profilePhotoUrl,
+    this.defaultOtAssistantId,
+    this.defaultOtAssistantName,
     this.originalPassword,
     this.updatedAt,
   });
@@ -104,6 +116,8 @@ class HospitalUserModel {
         experienceYears: (j['experience_years'] as num?)?.toInt(),
         signatureUrl:    j['signature_url'] as String?,
         profilePhotoUrl: j['profile_photo_url'] as String?,
+        defaultOtAssistantId: (j['default_ot_assistant_id'] as num?)?.toInt(),
+        defaultOtAssistantName: (j['default_ot_assistant'] as Map<String, dynamic>?)?['name'] as String?,
         originalPassword: j['original_password'] as String?,
         updatedAt: j['updated_at'] != null ? DateTime.tryParse(j['updated_at'] as String) : null,
       );
@@ -117,10 +131,20 @@ class DoctorTypeOption {
       DoctorTypeOption(value: j['value'] as String, label: j['label'] as String);
 }
 
+/// `{id, name}` option for the "Connected OT Assistant" doctor-only field.
+class OtAssistantOption {
+  final int id;
+  final String name;
+  const OtAssistantOption({required this.id, required this.name});
+  factory OtAssistantOption.fromJson(Map<String, dynamic> j) =>
+      OtAssistantOption(id: (j['id'] as num).toInt(), name: j['name'] as String? ?? '');
+}
+
 class UserFormData {
   final List<UserRole> roles;
   final List<DoctorTypeOption> doctorTypes;
-  const UserFormData({required this.roles, required this.doctorTypes});
+  final List<OtAssistantOption> otAssistants;
+  const UserFormData({required this.roles, required this.doctorTypes, this.otAssistants = const []});
 }
 
 class UserListResponse {
@@ -147,11 +171,12 @@ class UserService with AuthenticatedService {
 
   Future<UserListResponse> fetchUsers({
     int page = 1,
+    int perPage = 25,
     String? search,
     int? roleId,
     String? status,
   }) async {
-    final params = <String, String>{'page': page.toString(), 'per_page': '20'};
+    final params = <String, String>{'page': page.toString(), 'per_page': perPage.toString()};
     if (search != null && search.isNotEmpty) params['search'] = search;
     if (roleId != null) params['role_id'] = roleId.toString();
     if (status != null) params['status'] = status;
@@ -198,6 +223,9 @@ class UserService with AuthenticatedService {
       doctorTypes: (data['doctor_types'] as List)
           .map((e) => DoctorTypeOption.fromJson(e as Map<String, dynamic>))
           .toList(),
+      otAssistants: (data['ot_assistants'] as List? ?? [])
+          .map((e) => OtAssistantOption.fromJson(e as Map<String, dynamic>))
+          .toList(),
     );
   }
 
@@ -229,6 +257,7 @@ class UserService with AuthenticatedService {
     String? doctorPrefix,
     String? registrationNo,
     int? experienceYears,
+    int? defaultOtAssistantId,
     bool focPermission = false,
     File? signature,
     File? profilePhoto,
@@ -252,6 +281,7 @@ class UserService with AuthenticatedService {
     if (doctorPrefix != null) request.fields['doctor_prefix'] = doctorPrefix;
     if (registrationNo != null) request.fields['registration_no'] = registrationNo;
     if (experienceYears != null) request.fields['experience_years'] = experienceYears.toString();
+    if (defaultOtAssistantId != null) request.fields['default_ot_assistant_id'] = defaultOtAssistantId.toString();
 
     if (signature != null) {
       request.files.add(await http.MultipartFile.fromPath('signature', signature.path));
@@ -282,6 +312,7 @@ class UserService with AuthenticatedService {
     String? doctorPrefix,
     String? registrationNo,
     int? experienceYears,
+    int? defaultOtAssistantId,
     bool focPermission = false,
     File? signature,
     bool clearSignature = false,
@@ -316,6 +347,7 @@ class UserService with AuthenticatedService {
     if (doctorPrefix != null) request.fields['doctor_prefix'] = doctorPrefix;
     if (registrationNo != null) request.fields['registration_no'] = registrationNo;
     if (experienceYears != null) request.fields['experience_years'] = experienceYears.toString();
+    if (defaultOtAssistantId != null) request.fields['default_ot_assistant_id'] = defaultOtAssistantId.toString();
 
     if (signature != null) {
       request.files.add(await http.MultipartFile.fromPath('signature', signature.path));

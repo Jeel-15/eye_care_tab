@@ -85,3 +85,91 @@ class OtSurgeryMedicineLine {
   Map<String, dynamic> toJson() => {'medicine': medicine, 'dose': dose};
 }
 
+/// OT Assistant "View" parity (web pull 2026-09-30,
+/// `_view-modal.blade.php`'s "Surgery Record" section) — the recorded
+/// outcome of `storeSurgery()`, read-only display only (the write path
+/// still goes through `_AssistantDetailPane`'s own form fields).
+class OtSurgeryRecord {
+  final int id;
+  final String? surgeryName;
+  final String? eyeOperated;
+  final OtNamedRef? operatedBy;
+  final String? otRoom;
+  final DateTime? surgeryAt;
+  final DateTime? startTime;
+  final DateTime? endTime;
+  final String? complicationStatus;
+  final String? complicationNotes;
+  final String? surgeryStatus;
+
+  const OtSurgeryRecord({
+    required this.id,
+    this.surgeryName,
+    this.eyeOperated,
+    this.operatedBy,
+    this.otRoom,
+    this.surgeryAt,
+    this.startTime,
+    this.endTime,
+    this.complicationStatus,
+    this.complicationNotes,
+    this.surgeryStatus,
+  });
+
+  /// Web: `($end - $start + 1440) % 1440`, discarded if 0 or > 720 minutes —
+  /// guards against a bad/garbled time pair reading as a near-24h "surgery".
+  int? get durationMinutes {
+    if (startTime == null || endTime == null) return null;
+    final startMin = startTime!.hour * 60 + startTime!.minute;
+    final endMin = endTime!.hour * 60 + endTime!.minute;
+    final duration = (endMin - startMin + 1440) % 1440;
+    return (duration == 0 || duration > 720) ? null : duration;
+  }
+
+  factory OtSurgeryRecord.fromJson(Map<String, dynamic> j) => OtSurgeryRecord(
+        id: j['id'] as int,
+        surgeryName: j['surgery_name'] as String?,
+        eyeOperated: j['eye_operated'] as String?,
+        operatedBy: j['operated_by'] != null && j['operated_by'] is Map<String, dynamic> ? OtNamedRef.fromJson(j['operated_by'] as Map<String, dynamic>) : null,
+        otRoom: j['ot_room'] as String?,
+        surgeryAt: j['surgery_at'] != null ? DateTime.tryParse(j['surgery_at'] as String) : null,
+        startTime: j['start_time'] != null ? DateTime.tryParse(j['start_time'] as String) : null,
+        endTime: j['end_time'] != null ? DateTime.tryParse(j['end_time'] as String) : null,
+        complicationStatus: j['complication_status'] as String?,
+        complicationNotes: j['complication_notes'] as String?,
+        surgeryStatus: j['surgery_status'] as String?,
+      );
+}
+
+/// OT Assistant "View" parity — the implanted-lens record
+/// (`_view-modal.blade.php`'s "Implanted Lens" section).
+class OtLensDetailInfo {
+  final String? lensName;
+  final String? manufacturer;
+  final String? lensType;
+  final double? lensPower;
+  final double? axis;
+  final String? serialNumber;
+  final bool isImplanted;
+
+  const OtLensDetailInfo({
+    this.lensName,
+    this.manufacturer,
+    this.lensType,
+    this.lensPower,
+    this.axis,
+    this.serialNumber,
+    this.isImplanted = false,
+  });
+
+  factory OtLensDetailInfo.fromJson(Map<String, dynamic> j) => OtLensDetailInfo(
+        lensName: j['lens_name'] as String?,
+        manufacturer: j['manufacturer'] as String?,
+        lensType: j['lens_type'] as String?,
+        lensPower: switch (j['lens_power']) { num n => n.toDouble(), String s => double.tryParse(s), _ => null },
+        axis: switch (j['axis']) { num n => n.toDouble(), String s => double.tryParse(s), _ => null },
+        serialNumber: j['serial_number'] as String?,
+        isImplanted: j['is_implanted'] as bool? ?? false,
+      );
+}
+

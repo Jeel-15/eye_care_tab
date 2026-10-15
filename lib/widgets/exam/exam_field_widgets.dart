@@ -14,16 +14,25 @@ import 'sign_grid_popover.dart';
 
 // ── Section card ─────────────────────────────────────────────────────────
 
-/// One exam section — its own card with its own Save button (PRD §8.1:
-/// per-section save kept deliberately, not one combined Save-All).
+/// One exam section card. [onSave] is optional — web-parity exam shell uses
+/// a single Done on the section sheet instead of per-section Save.
 class ExamSectionCard extends StatelessWidget {
   final String title;
   final Widget child;
-  final VoidCallback onSave;
+  final VoidCallback? onSave;
   final bool saving;
   final bool saved;
+  final bool showHeader;
 
-  const ExamSectionCard({super.key, required this.title, required this.child, required this.onSave, this.saving = false, this.saved = false});
+  const ExamSectionCard({
+    super.key,
+    required this.title,
+    required this.child,
+    this.onSave,
+    this.saving = false,
+    this.saved = false,
+    this.showHeader = true,
+  });
 
   @override
   Widget build(BuildContext context) {
@@ -33,11 +42,13 @@ class ExamSectionCard extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(children: [
-            Expanded(child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.primary))),
-            _SaveButton(onTap: onSave, saving: saving, saved: saved),
-          ]),
-          const SizedBox(height: 12),
+          if (showHeader) ...[
+            Row(children: [
+              Expanded(child: Text(title, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.primary))),
+              if (onSave != null) _SaveButton(onTap: onSave!, saving: saving, saved: saved),
+            ]),
+            const SizedBox(height: 12),
+          ],
           child,
         ],
       ),
@@ -83,6 +94,15 @@ class TextPickerField extends StatefulWidget {
   final Future<bool> Function(ExamMasterItem item)? onToggleFavourite;
   final Color Function(String value)? borderColorFor;
   final ValueChanged<String>? onChanged;
+  /// Field-chain auto-advance: fires after a value is picked from the
+  /// popover (not on manual typing) — matches web's advanceExamRowField/
+  /// advanceVisionField pattern. See also [exposeOpener].
+  final VoidCallback? onFinalPick;
+  /// Lets a parent (e.g. a row builder wiring a field chain) capture this
+  /// field's own popover-open function, so it can be triggered
+  /// programmatically once the previous field in the chain is picked —
+  /// there's no other way to open a private State's popover from outside.
+  final void Function(VoidCallback open)? exposeOpener;
 
   const TextPickerField({
     super.key,
@@ -94,6 +114,8 @@ class TextPickerField extends StatefulWidget {
     this.onToggleFavourite,
     this.borderColorFor,
     this.onChanged,
+    this.onFinalPick,
+    this.exposeOpener,
   });
 
   @override
@@ -118,13 +140,17 @@ class _TextPickerFieldState extends State<TextPickerField> {
           grid: widget.grid,
           showFavourites: widget.showFavourites,
           onToggleFavourite: widget.onToggleFavourite,
-          onSelect: (v) => setState(() { widget.controller.text = v; widget.onChanged?.call(v); }),
+          onSelect: (v) {
+            setState(() { widget.controller.text = v; widget.onChanged?.call(v); });
+            widget.onFinalPick?.call();
+          },
           onClose: _popover.close,
         ));
   }
 
   @override
   Widget build(BuildContext context) {
+    widget.exposeOpener?.call(_open);
     final borderColor = widget.borderColorFor?.call(widget.controller.text) ?? AppColors.primaryA18;
     return CompositedTransformTarget(
       link: _popover.link,
@@ -241,8 +267,14 @@ class ChipPickerField extends StatefulWidget {
   final bool isSignField; // true = SPH/CYL (opens SignGridPopover), false = Axis/VN (opens MasterListPopover)
   final bool disabled;
   final VoidCallback? onChanged;
+  /// Field-chain auto-advance: fires after a value is picked (not on
+  /// dismiss-without-pick) — see TextPickerField.onFinalPick.
+  final VoidCallback? onFinalPick;
+  /// See TextPickerField.exposeOpener — lets a row builder trigger this
+  /// field's popover programmatically for chain-advance.
+  final void Function(VoidCallback open)? exposeOpener;
 
-  const ChipPickerField({super.key, required this.controller, required this.items, required this.isSignField, this.disabled = false, this.onChanged});
+  const ChipPickerField({super.key, required this.controller, required this.items, required this.isSignField, this.disabled = false, this.onChanged, this.onFinalPick, this.exposeOpener});
 
   @override
   State<ChipPickerField> createState() => _ChipPickerFieldState();
@@ -257,29 +289,52 @@ class _ChipPickerFieldState extends State<ChipPickerField> {
     super.dispose();
   }
 
+  // Client request (2026-10-07): both pickers were cramped enough to need
+  // real scrolling for a full value set — bumped from 300x380 (SPH/CYL)
+  // and the unset 340x420 default (Axis/VN) to one bigger shared size
+  // (400x520). That "needed scrolling" problem was actually a scroll-
+  // mechanics bug (MasterListPopover's grid/list didn't get a real bounded
+  // height to scroll within — fixed 2026-10-14), not something the popover
+  // needed to be huge to work around. Client report, same day, on the
+  // now-oversized result: shrunk back down near the original baseline —
+  // small and reliably scrollable beats big and cramped either way.
+  static const double _popoverWidth = 320;
+  static const double _popoverMaxHeight = 400;
+
   void _open() {
     if (widget.disabled) return;
     if (widget.isSignField) {
       _popover.show(context, (ctx) => SignGridPopover(
             items: widget.items,
             current: widget.controller.text,
-            onApply: (v) => setState(() { widget.controller.text = v; widget.onChanged?.call(); }),
+            onApply: (v) {
+              setState(() { widget.controller.text = v; widget.onChanged?.call(); });
+              widget.onFinalPick?.call();
+            },
             onClose: _popover.close,
-          ), width: 300, maxHeight: 380);
+          ), width: _popoverWidth, maxHeight: _popoverMaxHeight);
     } else {
       if (widget.items.isEmpty) return;
       _popover.show(context, (ctx) => MasterListPopover(
             items: widget.items,
             title: 'Select value',
             current: widget.controller.text,
-            onSelect: (v) => setState(() { widget.controller.text = v; widget.onChanged?.call(); }),
+            // Client request (2026-10-07): Axis/VN opened as a single-column
+            // list (MasterListPopover's `grid` already existed and was just
+            // never passed here) — same small-box grid SPH/CYL already uses.
+            grid: true,
+            onSelect: (v) {
+              setState(() { widget.controller.text = v; widget.onChanged?.call(); });
+              widget.onFinalPick?.call();
+            },
             onClose: _popover.close,
-          ));
+          ), width: _popoverWidth, maxHeight: _popoverMaxHeight);
     }
   }
 
   @override
   Widget build(BuildContext context) {
+    widget.exposeOpener?.call(_open);
     final t = widget.controller.text.trim();
     final isEmpty = t.isEmpty;
     Color bg, bd, fg;
@@ -305,6 +360,73 @@ class _ChipPickerFieldState extends State<ChipPickerField> {
           decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.sm), border: Border.all(color: bd)),
           alignment: Alignment.center,
           child: Text(isEmpty ? '—' : t, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
+        ),
+      ),
+    );
+  }
+}
+
+// ── Mini list-chip field (C/O & K/C/O's Since / Unit / Eye) ─────────────
+
+/// Same chip + anchored-popover look as [ChipPickerField], for a short fixed
+/// list of plain strings (no master-data ids/favourites) — used for C/O and
+/// K/C/O's Since/Unit/Eye fields, which previously opened a full-width
+/// modal bottom sheet that looked completely different from every other
+/// exam field's picker.
+class MiniListPickerField extends StatefulWidget {
+  final String value;
+  final List<String> options;
+  final ValueChanged<String> onChanged;
+  /// Field-chain auto-advance: fires after a value is picked — see
+  /// ChipPickerField.onFinalPick.
+  final VoidCallback? onFinalPick;
+  /// See ChipPickerField.exposeOpener.
+  final void Function(VoidCallback open)? exposeOpener;
+
+  const MiniListPickerField({super.key, required this.value, required this.options, required this.onChanged, this.onFinalPick, this.exposeOpener});
+
+  @override
+  State<MiniListPickerField> createState() => _MiniListPickerFieldState();
+}
+
+class _MiniListPickerFieldState extends State<MiniListPickerField> {
+  final _popover = PopoverController();
+
+  @override
+  void dispose() {
+    _popover.dispose();
+    super.dispose();
+  }
+
+  void _open() {
+    final items = widget.options.map((o) => ExamMasterItem(id: 0, value: o, isFavourite: false)).toList();
+    _popover.show(context, (ctx) => MasterListPopover(
+          items: items,
+          title: 'Select value',
+          current: widget.value == '-' ? '' : widget.value,
+          onSelect: (v) {
+            widget.onChanged(v);
+            widget.onFinalPick?.call();
+          },
+          onClose: _popover.close,
+        ), width: 200, maxHeight: 280);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    widget.exposeOpener?.call(_open);
+    final t = widget.value.trim();
+    final isEmpty = t.isEmpty || t == '-';
+    return CompositedTransformTarget(
+      link: _popover.link,
+      child: PressScaleWrapper(
+        onTap: _open,
+        child: Container(
+          height: 38,
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          decoration: BoxDecoration(color: isEmpty ? Colors.grey.shade50 : AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.sm), border: Border.all(color: isEmpty ? Colors.grey.shade300 : AppColors.primaryA40)),
+          alignment: Alignment.center,
+          child: Text(isEmpty ? '—' : t, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: isEmpty ? Colors.grey.shade400 : AppColors.primary), overflow: TextOverflow.ellipsis),
         ),
       ),
     );

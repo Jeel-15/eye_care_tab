@@ -7,12 +7,16 @@ import '../models/patient_models.dart';
 import '../utils/date_format.dart';
 import '../services/base_service.dart' show StaleRecordException;
 import '../services/masters_service.dart';
+import '../services/ot_appointment_service.dart';
 import '../services/patient_service.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../utils/phone_rules.dart';
+import '../widgets/add_city_dialog.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/form_kit.dart';
 import '../widgets/skeleton.dart';
+import '../utils/app_date_picker.dart';
 
 enum PatientFormMode { addWalkIn, addPhone, edit }
 
@@ -78,6 +82,21 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   List<ContactSuggestion> _suggestions = [];
   Timer? _contactDebounce;
   bool _showSuggestions = false;
+  bool _fillingSuggestion = false;
+
+  // ── OT check-in search (walk-in only) — web parity: `create.blade.php`'s
+  // optional "OT check-in search" panel lets reception pick a same-day,
+  // not-yet-checked-in OT appointment to pre-fill this form from and, on
+  // submit, mark that appointment completed + linked to the new patient
+  // (see PatientApiController::store()'s `ot_appointment_id` handling,
+  // already wired — only this search UI was missing).
+  final _otSearchCtrl = TextEditingController();
+  Timer? _otSearchDebounce;
+  List<OtAppointmentItem> _otSearchResults = [];
+  bool _otSearchExpanded = false;
+  bool _otSearching = false;
+  int? _linkedOtAppointmentId;
+  String? _linkedOtAppointmentNumber;
 
   bool _submitting = false;
   bool _isOldPatient = false;
@@ -86,6 +105,22 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
 
   DateTime _appointmentDate = DateTime.now();
 
+  // Web parity (`patients/edit-phone.blade.php`, web pull 2026-10-05) — a
+  // phone-registered patient who hasn't checked in yet (`type == 'phone' &&
+  // case_id == null`) edits with the slimmer phone-style form (Slot instead
+  // of Case Type/Fee), not the full walk-in edit form. Previously `isPhone`
+  // was ONLY true for the addPhone *creation* mode, never during edit — so
+  // editing a still-pending phone patient always opened the full walk-in
+  // form, and saving it unconditionally sent `case_id`/`case_fee`, silently
+  // converting the phone booking into a walk-in on save.
+  bool get _isPhoneEdit =>
+      widget.mode == PatientFormMode.edit &&
+      widget.patient?.type == 'phone' &&
+      widget.patient?.caseId == null;
+
+  bool get _isPhoneForm =>
+      widget.mode == PatientFormMode.addPhone || _isPhoneEdit;
+
   @override
   void initState() {
     super.initState();
@@ -93,7 +128,8 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     _loadMasters();
     if (widget.mode == PatientFormMode.edit && widget.patient != null) {
       _prefillFromPatient(widget.patient!);
-    } else if (widget.mode == PatientFormMode.addWalkIn && widget.prefillOt != null) {
+    } else if (widget.mode == PatientFormMode.addWalkIn &&
+        widget.prefillOt != null) {
       _prefillFromOt(widget.prefillOt!);
     }
   }
@@ -101,8 +137,10 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   void _initDate() {
     if (widget.mode == PatientFormMode.addPhone) {
       _appointmentDate = DateTime.now().add(const Duration(days: 1));
-    } else if (widget.mode == PatientFormMode.edit && widget.patient?.appointmentDate != null) {
-      _appointmentDate = DateTime.tryParse(widget.patient!.appointmentDate!) ?? DateTime.now();
+    } else if (widget.mode == PatientFormMode.edit &&
+        widget.patient?.appointmentDate != null) {
+      _appointmentDate =
+          parseApiPlainDate(widget.patient!.appointmentDate!) ?? DateTime.now();
     }
     _apptDateCtrl.text = _formatDate(_appointmentDate);
   }
@@ -119,6 +157,7 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     _occupationCtrl.text = p.occupation ?? '';
     _selectedGender = p.gender ?? 'male';
     _selectedCaseId = p.caseId;
+    _selectedSlotId = p.slotId;
     _selectedDoctorId = p.doctor?.id;
     _selectedLocationId = p.location?.id;
     _districtCtrl.text = p.location?.district ?? '';
@@ -137,6 +176,86 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     _ageCtrl.text = o.age > 0 ? o.age.toString() : '';
     _selectedGender = o.gender.toLowerCase() == 'female' ? 'female' : 'male';
     _occupationCtrl.text = o.occupation ?? '';
+    // Doctor/City were never read here before (comment above used to say
+    // "name/contact/age/gender only") — District/State can't be resolved
+    // yet since `_masters` hasn't finished loading at this point (this runs
+    // synchronously in initState, before `_loadMasters()`'s awaited fetch
+    // returns); `_loadMasters()` resolves them once the location list is
+    // actually available. The dropdowns themselves don't have this problem
+    // — they aren't built until masters finishes loading, so setting the
+    // id here is enough for them to show the right selection on first build.
+    _selectedDoctorId = o.doctor?.id;
+    _selectedLocationId = o.location?.id;
+    _selectedReferrerId = o.referrerId;
+    _linkedOtAppointmentId = o.id;
+    _linkedOtAppointmentNumber = o.appointmentNumber;
+    _otSearchCtrl.text = '${o.appointmentNumber} — ${o.fullName}';
+    _otSearchExpanded = true;
+  }
+
+  // ── OT check-in search ───────────────────────────────────────────────────
+
+  void _onOtSearchChanged(String val) {
+    _otSearchDebounce?.cancel();
+    if (val.trim().length < 3) {
+      setState(() => _otSearchResults = []);
+      return;
+    }
+    _otSearchDebounce = Timer(const Duration(milliseconds: 300), () async {
+      setState(() => _otSearching = true);
+      try {
+        final result = await OtAppointmentService.instance.search(val.trim());
+        if (mounted)
+          setState(() {
+            _otSearchResults = result.appointments;
+            _otSearching = false;
+          });
+      } catch (_) {
+        if (mounted)
+          setState(() {
+            _otSearchResults = [];
+            _otSearching = false;
+          });
+      }
+    });
+  }
+
+  void _selectOtAppointment(OtAppointmentItem o) {
+    setState(() {
+      _firstCtrl.text = o.patientName;
+      _lastCtrl.text = o.surname;
+      _middleCtrl.text = o.middleName ?? '';
+      _whatsappCtrl.text = o.whatsappNo ?? '';
+      _ageCtrl.text = o.age > 0 ? o.age.toString() : '';
+      _occupationCtrl.text = o.occupation ?? '';
+      _contactCtrl.text = o.mobileNo;
+      _selectedGender = o.gender.toLowerCase() == 'female' ? 'female' : 'male';
+      if (o.doctor != null) _selectedDoctorId = o.doctor!.id;
+      if (o.referrerId != null) _selectedReferrerId = o.referrerId;
+      if (o.location != null) {
+        final loc = _masters?.locations
+            .where((l) => l.id == o.location!.id)
+            .firstOrNull;
+        if (loc != null) {
+          _selectedLocationId = loc.id;
+          _districtCtrl.text = loc.district;
+          _stateCtrl.text = loc.state;
+        }
+      }
+      _linkedOtAppointmentId = o.id;
+      _linkedOtAppointmentNumber = o.appointmentNumber;
+      _otSearchCtrl.text = '${o.appointmentNumber} — ${o.fullName}';
+      _otSearchResults = [];
+    });
+  }
+
+  void _clearOtLink() {
+    setState(() {
+      _linkedOtAppointmentId = null;
+      _linkedOtAppointmentNumber = null;
+      _otSearchCtrl.clear();
+      _otSearchResults = [];
+    });
   }
 
   Future<void> _loadMasters() async {
@@ -147,7 +266,22 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     try {
       final masters = await MastersService.instance.fetchAll();
       if (!mounted) return;
-      setState(() => _masters = masters);
+      setState(() {
+        _masters = masters;
+        // Resolves District/State for the OT-dashboard-widget prefill flow
+        // (_prefillFromOt already set _selectedLocationId, but couldn't look
+        // up the district/state text since this list wasn't loaded yet).
+        if (widget.mode == PatientFormMode.addWalkIn &&
+            _selectedLocationId != null) {
+          final loc = masters.locations
+              .where((l) => l.id == _selectedLocationId)
+              .firstOrNull;
+          if (loc != null) {
+            _districtCtrl.text = loc.district;
+            _stateCtrl.text = loc.state;
+          }
+        }
+      });
       if (widget.mode != PatientFormMode.edit) {
         final mrd = await PatientService.instance.fetchNextMrd();
         if (mounted) _mrdCtrl.text = mrd;
@@ -174,12 +308,19 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     _stateCtrl.dispose();
     _apptDateCtrl.dispose();
     _contactDebounce?.cancel();
+    _otSearchCtrl.dispose();
+    _otSearchDebounce?.cancel();
     super.dispose();
   }
 
-  void _onContactChanged(String val) {
+  // Web parity: the past-patient suggestion lookup is keyed off the Contact
+  // Number only, not the Name — typing a new patient's name must never
+  // surface someone else's record by name match.
+  void _onLookupChanged(String val) {
+    if (_fillingSuggestion) return;
     _contactDebounce?.cancel();
-    if (!PhoneRules.hasEnoughDigits(val)) {
+    final q = val.trim();
+    if (q.length < 3) {
       setState(() {
         _suggestions = [];
         _showSuggestions = false;
@@ -188,7 +329,7 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     }
     _contactDebounce = Timer(const Duration(milliseconds: 500), () async {
       try {
-        final results = await PatientService.instance.searchByContact(val);
+        final results = await PatientService.instance.searchByContact(q);
         if (mounted) {
           setState(() {
             _suggestions = results;
@@ -200,6 +341,7 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   }
 
   void _fillFromSuggestion(ContactSuggestion s) {
+    _fillingSuggestion = true;
     setState(() {
       _firstCtrl.text = s.firstName;
       _lastCtrl.text = s.lastName;
@@ -207,9 +349,13 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       _ageCtrl.text = s.age?.toString() ?? '';
       _occupationCtrl.text = s.occupation ?? '';
       if (s.whatsappNo != null) _whatsappCtrl.text = s.whatsappNo!;
+      if (s.contactNo != null && s.contactNo!.isNotEmpty)
+        _contactCtrl.text = s.contactNo!;
       if (s.gender != null) _selectedGender = s.gender!;
       if (s.locationId != null) {
-        final loc = _masters?.locations.where((l) => l.id == s.locationId).firstOrNull;
+        final loc = _masters?.locations
+            .where((l) => l.id == s.locationId)
+            .firstOrNull;
         if (loc != null) {
           _selectedLocationId = s.locationId;
           _districtCtrl.text = loc.district;
@@ -220,19 +366,27 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       _suggestions = [];
       _showSuggestions = false;
     });
+    _fillingSuggestion = false;
     if (s.type == 'shared') {
-      showAppSnackBar(context, 'Shared patient selected — please verify city/location.');
+      showAppSnackBar(
+        context,
+        'Shared patient selected — please verify city/location.',
+      );
     }
   }
 
   Future<void> _pickDate() async {
-    final picked = await showDatePicker(
+    final picked = await showAppDatePicker(
       context: context,
       initialDate: _appointmentDate,
-      firstDate: widget.mode == PatientFormMode.edit ? DateTime(2020) : DateTime.now(),
+      firstDate: widget.mode == PatientFormMode.edit
+          ? DateTime(2020)
+          : DateTime.now(),
       lastDate: DateTime.now().add(const Duration(days: 365)),
       builder: (ctx, child) => Theme(
-        data: Theme.of(ctx).copyWith(colorScheme: ColorScheme.light(primary: AppColors.primary)),
+        data: Theme.of(
+          ctx,
+        ).copyWith(colorScheme: ColorScheme.light(primary: AppColors.primary)),
         child: child!,
       ),
     );
@@ -245,71 +399,21 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   }
 
   Future<void> _addCity() async {
-    final cityCtrl = TextEditingController();
-    final distCtrl = TextEditingController();
-    final stateCtrl = TextEditingController();
-
-    final result = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-        titlePadding: EdgeInsets.zero,
-        title: Container(
-          padding: const EdgeInsets.fromLTRB(20, 18, 16, 14),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(colors: [AppColors.primary, AppColors.blueLight], begin: Alignment.centerLeft, end: Alignment.centerRight),
-            borderRadius: BorderRadius.vertical(top: Radius.circular(AppRadius.lg)),
-          ),
-          child: Row(children: [
-            const Icon(Icons.add_location_alt_outlined, color: Colors.white, size: 20),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('Add City', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w700))),
-            IconButton(icon: const Icon(Icons.close, color: Colors.white, size: 18), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () => Navigator.pop(ctx, false)),
-          ]),
-        ),
-        content: Column(mainAxisSize: MainAxisSize.min, children: [
-          const SizedBox(height: 8),
-          _dialogField(cityCtrl, 'City *'),
-          const SizedBox(height: 12),
-          _dialogField(distCtrl, 'District'),
-          const SizedBox(height: 12),
-          _dialogField(stateCtrl, 'State'),
-        ]),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-          ElevatedButton(onPressed: () => Navigator.pop(ctx, true), style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary), child: const Text('Add', style: TextStyle(color: Colors.white))),
-        ],
-      ),
-    );
-
-    if (result != true || cityCtrl.text.trim().isEmpty) return;
-
-    try {
-      final loc = await MastersService.instance.addLocation(city: cityCtrl.text.trim(), district: distCtrl.text.trim(), state: stateCtrl.text.trim());
-      if (mounted) {
-        setState(() {
-          _masters = MastersData(cases: _masters!.cases, doctors: _masters!.doctors, locations: [..._masters!.locations, loc], slots: _masters!.slots, referrers: _masters!.referrers);
-          _selectedLocationId = loc.id;
-          _districtCtrl.text = loc.district;
-          _stateCtrl.text = loc.state;
-        });
-        showAppSnackBar(context, 'City "${loc.city}" added.', isSuccess: true);
-      }
-    } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString(), isError: true);
-    }
-  }
-
-  Widget _dialogField(TextEditingController ctrl, String label) {
-    return TextField(
-      controller: ctrl,
-      decoration: InputDecoration(
-        labelText: label,
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-      ),
-    );
+    final loc = await showAddCityDialog(context);
+    if (loc == null || !mounted) return;
+    setState(() {
+      _masters = MastersData(
+        cases: _masters!.cases,
+        doctors: _masters!.doctors,
+        locations: [..._masters!.locations, loc],
+        slots: _masters!.slots,
+        referrers: _masters!.referrers,
+      );
+      _selectedLocationId = loc.id;
+      _districtCtrl.text = loc.district;
+      _stateCtrl.text = loc.state;
+    });
+    showAppSnackBar(context, 'City "${loc.city}" added.', isSuccess: true);
   }
 
   Future<void> _submit() async {
@@ -318,13 +422,15 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
 
     setState(() => _submitting = true);
     try {
-      final isPhone = widget.mode == PatientFormMode.addPhone;
+      final isPhone = _isPhoneForm;
       final isEdit = widget.mode == PatientFormMode.edit;
 
       final data = <String, dynamic>{
         'appointment_date': _formatDate(_appointmentDate, iso: true),
         'contact_no': _contactCtrl.text.trim(),
-        'whatsapp_no': _whatsappCtrl.text.trim().isEmpty ? null : _whatsappCtrl.text.trim(),
+        'whatsapp_no': _whatsappCtrl.text.trim().isEmpty
+            ? null
+            : _whatsappCtrl.text.trim(),
         'first_name': _firstCtrl.text.trim(),
         'last_name': _lastCtrl.text.trim(),
         'middle_name': _middleCtrl.text.trim(),
@@ -332,7 +438,9 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
         'location_id': _selectedLocationId,
         'age': int.tryParse(_ageCtrl.text.trim()),
         'gender': _selectedGender,
-        'occupation': _occupationCtrl.text.trim().isEmpty ? null : _occupationCtrl.text.trim(),
+        'occupation': _occupationCtrl.text.trim().isEmpty
+            ? null
+            : _occupationCtrl.text.trim(),
         'referrer_id': _selectedReferrerId,
         'is_old_patient': _isOldPatient,
       };
@@ -344,20 +452,32 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
         data['slot_id'] = _selectedSlotId;
       }
 
-      if (widget.mode == PatientFormMode.addWalkIn && widget.prefillOt != null) {
-        data['ot_appointment_id'] = widget.prefillOt!.id;
+      if (widget.mode == PatientFormMode.addWalkIn &&
+          _linkedOtAppointmentId != null) {
+        data['ot_appointment_id'] = _linkedOtAppointmentId;
       }
 
       Patient saved;
       if (isEdit) {
-        data['case_fee'] = double.tryParse(_caseFeeCtrl.text.trim()) ?? 0;
-        data['case_id'] = _selectedCaseId;
+        // case_fee/case_id are editable in edit — but NEVER for a still-
+        // pending phone patient (no case assigned yet): sending them would
+        // silently convert the phone booking into a walk-in on save, since
+        // `case_id`/`case_fee` being set is exactly what distinguishes a
+        // checked-in patient from a pending phone appointment server-side.
+        if (!isPhone) {
+          data['case_fee'] = double.tryParse(_caseFeeCtrl.text.trim()) ?? 0;
+          data['case_id'] = _selectedCaseId;
+        }
         // Optimistic-concurrency guard — see
         // ACCESS_CONTROL_AND_DATA_SYNC_PLAN.md Phase 5.
         if (widget.patient!.updatedAt != null) {
-          data['expected_updated_at'] = widget.patient!.updatedAt!.toIso8601String();
+          data['expected_updated_at'] = widget.patient!.updatedAt!
+              .toIso8601String();
         }
-        saved = await PatientService.instance.updatePatient(widget.patient!.id, data);
+        saved = await PatientService.instance.updatePatient(
+          widget.patient!.id,
+          data,
+        );
       } else if (isPhone) {
         saved = await PatientService.instance.registerPhone(data);
       } else {
@@ -372,7 +492,13 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       }
       return;
     } catch (e) {
-      if (mounted) showAppSnackBar(context, e.toString(), isError: true, duration: const Duration(seconds: 4));
+      if (mounted)
+        showAppSnackBar(
+          context,
+          e.toString(),
+          isError: true,
+          duration: const Duration(seconds: 4),
+        );
     } finally {
       if (mounted) setState(() => _submitting = false);
     }
@@ -387,13 +513,30 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Column(mainAxisSize: MainAxisSize.min, children: [
-            const Icon(Icons.wifi_off_rounded, size: 48, color: AppColors.red),
-            const SizedBox(height: 12),
-            Text(_mastersError ?? 'Failed to load form data.', textAlign: TextAlign.center),
-            const SizedBox(height: 16),
-            ElevatedButton.icon(onPressed: _loadMasters, icon: const Icon(Icons.refresh_rounded), label: const Text('Retry'), style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary)),
-          ]),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.wifi_off_rounded,
+                size: 48,
+                color: AppColors.red,
+              ),
+              const SizedBox(height: 12),
+              Text(
+                _mastersError ?? 'Failed to load form data.',
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 16),
+              ElevatedButton.icon(
+                onPressed: _loadMasters,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('Retry'),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppColors.primary,
+                ),
+              ),
+            ],
+          ),
         ),
       );
     }
@@ -409,26 +552,77 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
 
   Widget _buildHeader() {
     final (title, subtitle, icon) = switch (widget.mode) {
-      PatientFormMode.addWalkIn => ('Register New Patient', 'Capture patient information and appointment details', Icons.person_add_rounded),
-      PatientFormMode.addPhone => ('Register Phone Appointment', 'Capture caller details and appointment information', Icons.phone_in_talk_rounded),
-      PatientFormMode.edit => ('Edit Patient', 'Update patient information and appointment details', Icons.edit_rounded),
+      PatientFormMode.addWalkIn => (
+        'Register New Patient',
+        'Capture patient information and appointment details',
+        Icons.person_add_rounded,
+      ),
+      PatientFormMode.addPhone => (
+        'Register Phone Appointment',
+        'Capture caller details and appointment information',
+        Icons.phone_in_talk_rounded,
+      ),
+      // Web parity (`patients/edit-phone.blade.php`) — a still-pending
+      // phone patient edits under its own title, matching web exactly.
+      PatientFormMode.edit when _isPhoneEdit => (
+        'Edit Phone Appointment',
+        'Update caller details and appointment information',
+        Icons.phone_in_talk_rounded,
+      ),
+      PatientFormMode.edit => (
+        'Edit Patient',
+        'Update patient information and appointment details',
+        Icons.edit_rounded,
+      ),
     };
     return Row(
       children: [
-        IconButton(icon: Icon(Icons.close_rounded, color: AppColors.primary), onPressed: widget.onCancel, tooltip: 'Cancel'),
+        IconButton(
+          icon: Icon(Icons.close_rounded, color: AppColors.primary),
+          onPressed: widget.onCancel,
+          tooltip: 'Cancel',
+        ),
         Container(
-          width: 40,
-          height: 40,
-          decoration: BoxDecoration(color: AppColors.primaryA10, borderRadius: BorderRadius.circular(AppRadius.md)),
-          child: Icon(icon, color: AppColors.primary, size: 20),
+          width: 42,
+          height: 42,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [AppColors.primary, AppColors.blueLight],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(13),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.primary.withValues(alpha: 0.28),
+                blurRadius: 10,
+                offset: const Offset(0, 3),
+              ),
+            ],
+          ),
+          child: Icon(icon, color: Colors.white, size: 20),
         ),
         const SizedBox(width: 12),
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(title, style: TextStyle(color: AppColors.primary, fontSize: 17, fontWeight: FontWeight.w800)),
-              Text(subtitle, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
+              Text(
+                title,
+                style: TextStyle(
+                  color: AppColors.darkNavy,
+                  fontSize: 17,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              Text(
+                subtitle,
+                style: const TextStyle(
+                  color: AppColors.textSecondary,
+                  fontSize: 11,
+                ),
+              ),
             ],
           ),
         ),
@@ -437,81 +631,196 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   }
 
   Widget _buildForm() {
-    final isPhone = widget.mode == PatientFormMode.addPhone;
+    final isPhone = _isPhoneForm;
     final isEdit = widget.mode == PatientFormMode.edit;
+    final isWalkIn = widget.mode == PatientFormMode.addWalkIn;
 
+    // Field ORDER here must match web's exact DOM order — confirmed against
+    // `patients/create.blade.php` (walk-in), `create-phone.blade.php` and
+    // `edit.blade.php` (walk-in/edit share one order; phone differs by
+    // skipping MRD/Case Type/Case Fee and inserting Slot Time after
+    // Doctor). Web itself has no named sections in this form (just one
+    // continuous grid under one "Add Patient" card) — an earlier pass here
+    // grouped fields into Appointment/Contact/Personal/Visit-Details cards,
+    // which read nicer but silently reordered fields relative to web; that
+    // grouping is reverted. `_row2` still packs 2-per-row for the tablet's
+    // narrower dialog (web's own grid is wider), but always pairs
+    // *consecutive* fields, so left-to-right/top-to-bottom reading order
+    // stays identical to web's.
     return Form(
       key: _formKey,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           if (isEdit && _examDoneWarning && !_warnDismissed) _buildWarnBanner(),
+          if (isWalkIn) _buildOtCheckinSection(),
+
+          // MRD — its own line above everything else, matching web's
+          // `rpc-grid--1` row. Web has no MRD on the phone pre-registration
+          // (create) form — no patient_code yet — but DOES show it, read-
+          // only, when editing a phone patient (`edit-phone.blade.php`),
+          // since the patient already has a code by then.
+          if (isEdit || !isPhone) ...[
+            _readonlyField(_mrdCtrl, 'MRD Number', Icons.badge_outlined),
+            const SizedBox(height: 14),
+          ],
 
           _row2(
-            _field('MRD Number', _readonlyField(_mrdCtrl, 'MRD No.', Icons.badge_outlined)),
-            _field('Appointment Date *', _datefield()),
+            _datefield(),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _contactField(),
+                if (_showSuggestions) _suggestionDropdown(),
+              ],
+            ),
           ),
+          const SizedBox(height: 14),
           _row2(
-            _field('Contact Number *', Column(crossAxisAlignment: CrossAxisAlignment.start, children: [_contactField(), if (_showSuggestions) _suggestionDropdown()])),
-            _field('WhatsApp Number', _textField(_whatsappCtrl, 'WhatsApp No (same if blank)', inputType: TextInputType.phone, maxLength: 16, validator: PhoneRules.nullable)),
+            _textField(
+              _whatsappCtrl,
+              'WhatsApp Number',
+              hint: 'Same as contact if blank',
+              inputType: TextInputType.phone,
+              maxLength: 16,
+              validator: PhoneRules.nullable,
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                _textField(_firstCtrl, 'First Name *', required: true),
+              ],
+            ),
           ),
+          const SizedBox(height: 14),
           _row2(
-            _field('First Name *', _textField(_firstCtrl, 'First Name', required: true)),
-            _field('Surname *', _textField(_lastCtrl, 'Surname', required: true)),
+            _textField(_lastCtrl, 'Surname *', required: true),
+            _textField(_middleCtrl, 'Middle Name'),
           ),
-          _row2(
-            _field('Middle Name', _textField(_middleCtrl, 'Middle Name')),
-            _field('Doctor Name *', _doctorDropdown()),
-          ),
-          if (!isPhone)
+          const SizedBox(height: 14),
+
+          if (!isPhone) ...[
             _row2(
-              _field('Case Type *', _caseTypeDropdown()),
-              _field(
+              _caseTypeDropdown(),
+              _textField(
+                _caseFeeCtrl,
                 'Case Fee (${widget.hospital.currencySymbol}) *',
-                _textField(_caseFeeCtrl, 'Case Fee', inputType: TextInputType.number, required: true, readOnly: widget.mode == PatientFormMode.addWalkIn, hintOverride: widget.mode == PatientFormMode.addWalkIn ? 'Auto-filled from Case Type' : null),
+                inputType: TextInputType.number,
+                required: true,
+                readOnly: isWalkIn,
+                hintOverride: isWalkIn ? 'Auto-filled from Case Type' : null,
               ),
             ),
-          _field(
-            'City *',
-            Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton.icon(
-                  onPressed: _addCity,
-                  icon: Icon(Icons.add_rounded, size: 14, color: AppColors.primary),
-                  label: Text('Add City', style: TextStyle(fontSize: 12, color: AppColors.primary)),
-                  style: TextButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 0), minimumSize: Size.zero),
+            const SizedBox(height: 14),
+          ],
+
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  'CITY',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textSecondary,
+                    letterSpacing: 0.4,
+                  ),
                 ),
               ),
-              _locationDropdown(),
-            ]),
-            fullWidth: true,
+              TextButton.icon(
+                onPressed: _addCity,
+                icon: Icon(
+                  Icons.add_rounded,
+                  size: 14,
+                  color: AppColors.primary,
+                ),
+                label: Text(
+                  'Add City',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: AppColors.primary,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 4,
+                    vertical: 0,
+                  ),
+                  minimumSize: Size.zero,
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 4),
           _row2(
-            _field('District', _readonlyField(_districtCtrl, 'District', Icons.location_city_outlined)),
-            _field('State', _readonlyField(_stateCtrl, 'State', Icons.map_outlined)),
-          ),
-          _row2(
-            _field('Age *', _textField(_ageCtrl, 'Age', inputType: TextInputType.number, required: true, maxLength: 3)),
-            _field('Gender *', _genderDropdown()),
-          ),
-          _row2(
-            _field('Occupation', _textField(_occupationCtrl, 'Occupation')),
-            isPhone ? _field('Time Slot', _slotDropdown()) : _field('Referred By', _referrerDropdown()),
-          ),
-          if (isPhone) _field('Referred By', _referrerDropdown(), fullWidth: true),
-
-          const SizedBox(height: 12),
-          Row(children: [
-            Expanded(child: _submitButton(isEdit: isEdit, isPhone: isPhone)),
-            const SizedBox(width: 12),
-            OutlinedButton(
-              onPressed: widget.onCancel,
-              style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40)), side: BorderSide(color: AppColors.primaryA22)),
-              child: const Text('Cancel'),
+            _locationDropdown(),
+            _readonlyField(
+              _districtCtrl,
+              'District',
+              Icons.location_city_outlined,
             ),
-          ]),
-          const SizedBox(height: 24),
+          ),
+          const SizedBox(height: 14),
+          _row2(
+            _readonlyField(_stateCtrl, 'State', Icons.map_outlined),
+            _doctorDropdown(),
+          ),
+          const SizedBox(height: 14),
+
+          if (isPhone) ...[
+            _row2(
+              _slotDropdown(),
+              _textField(
+                _ageCtrl,
+                'Age *',
+                inputType: TextInputType.number,
+                required: true,
+                maxLength: 3,
+              ),
+            ),
+            const SizedBox(height: 14),
+            _row2(_genderDropdown(), _textField(_occupationCtrl, 'Occupation')),
+            const SizedBox(height: 14),
+            _referrerDropdown(),
+          ] else ...[
+            _row2(
+              _textField(
+                _ageCtrl,
+                'Age *',
+                inputType: TextInputType.number,
+                required: true,
+                maxLength: 3,
+              ),
+              _genderDropdown(),
+            ),
+            const SizedBox(height: 14),
+            _row2(
+              _textField(_occupationCtrl, 'Occupation'),
+              _referrerDropdown(),
+            ),
+          ],
+
+          const SizedBox(height: 20),
+          Row(
+            children: [
+              Expanded(
+                child: AppPrimaryButton(
+                  label: isEdit
+                      ? 'Update Patient'
+                      : isPhone
+                      ? 'Register Phone Appointment'
+                      : 'Register Patient',
+                  icon: Icons.check_circle_outline_rounded,
+                  loading: _submitting,
+                  onPressed: _submit,
+                ),
+              ),
+              const SizedBox(width: 12),
+              AppSecondaryButton(onPressed: widget.onCancel),
+            ],
+          ),
+          const SizedBox(height: 20),
         ],
       ),
     );
@@ -520,65 +829,88 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   // ── Layout helpers ──────────────────────────────────────────────────────
 
   Widget _row2(Widget a, Widget b) {
-    return LayoutBuilder(builder: (context, constraints) {
-      if (constraints.maxWidth < 520) {
-        return Column(children: [a, b]);
-      }
-      return Row(crossAxisAlignment: CrossAxisAlignment.start, children: [Expanded(child: a), const SizedBox(width: 16), Expanded(child: b)]);
-    });
-  }
-
-  Widget _field(String label, Widget child, {bool fullWidth = false}) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 14),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(label, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.primary)),
-          const SizedBox(height: 5),
-          child,
-        ],
-      ),
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        if (constraints.maxWidth < 460) {
+          return Column(children: [a, const SizedBox(height: 14), b]);
+        }
+        return Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(child: a),
+            const SizedBox(width: 14),
+            Expanded(child: b),
+          ],
+        );
+      },
     );
   }
 
-  InputDecoration _inputDeco(String hint, {IconData? prefix, bool readOnly = false}) {
-    return InputDecoration(
-      hintText: hint,
-      hintStyle: TextStyle(fontSize: 13, color: AppColors.primary.withValues(alpha: 0.4)),
-      prefixIcon: prefix != null ? Icon(prefix, size: 18, color: AppColors.primary.withValues(alpha: 0.5)) : null,
-      filled: true,
-      fillColor: readOnly ? AppColors.primary.withValues(alpha: 0.04) : Colors.white,
-      contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary.withValues(alpha: 0.18))),
-      enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary.withValues(alpha: 0.18))),
-      focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: BorderSide(color: AppColors.primary, width: 1.5)),
-      errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: const BorderSide(color: AppColors.red)),
-      focusedErrorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(11), borderSide: const BorderSide(color: AppColors.red, width: 1.5)),
-    );
-  }
-
-  Widget _textField(TextEditingController ctrl, String hint, {TextInputType inputType = TextInputType.text, bool required = false, bool readOnly = false, int? maxLength, String? Function(String?)? validator, String? hintOverride}) {
+  Widget _textField(
+    TextEditingController ctrl,
+    String label, {
+    String? hint,
+    TextInputType inputType = TextInputType.text,
+    bool required = false,
+    bool readOnly = false,
+    int? maxLength,
+    String? Function(String?)? validator,
+    String? hintOverride,
+    ValueChanged<String>? onChanged,
+  }) {
     return TextFormField(
       controller: ctrl,
       keyboardType: inputType,
       readOnly: readOnly,
+      onChanged: onChanged,
       maxLength: maxLength,
-      inputFormatters: inputType == TextInputType.number ? [FilteringTextInputFormatter.digitsOnly] : null,
-      decoration: _inputDeco(hintOverride ?? hint, readOnly: readOnly).copyWith(counterText: ''),
-      validator: validator ?? (required ? (v) => (v == null || v.trim().isEmpty) ? '$hint is required' : null : null),
+      inputFormatters: inputType == TextInputType.number
+          ? [FilteringTextInputFormatter.digitsOnly]
+          : null,
+      decoration: appFieldDecoration(
+        label,
+        hint: hintOverride ?? hint,
+        readOnly: readOnly,
+      ).copyWith(counterText: ''),
+      validator:
+          validator ??
+          (required
+              ? (v) => (v == null || v.trim().isEmpty)
+                    ? '$label is required'
+                    : null
+              : null),
     );
   }
 
-  Widget _readonlyField(TextEditingController ctrl, String hint, IconData icon) {
-    return TextFormField(controller: ctrl, readOnly: true, style: TextStyle(color: AppColors.primary.withValues(alpha: 0.65), fontWeight: FontWeight.w500), decoration: _inputDeco(hint, prefix: icon, readOnly: true));
+  Widget _readonlyField(
+    TextEditingController ctrl,
+    String label,
+    IconData icon,
+  ) {
+    return TextFormField(
+      controller: ctrl,
+      readOnly: true,
+      style: TextStyle(
+        color: AppColors.primary.withValues(alpha: 0.65),
+        fontWeight: FontWeight.w500,
+      ),
+      decoration: appFieldDecoration(label, prefix: icon, readOnly: true),
+    );
   }
 
   Widget _datefield() {
     return GestureDetector(
       onTap: _pickDate,
       child: AbsorbPointer(
-        child: TextFormField(controller: _apptDateCtrl, decoration: _inputDeco('Pick date', prefix: Icons.calendar_today_outlined), validator: (v) => (v == null || v.isEmpty) ? 'Appointment date required' : null),
+        child: TextFormField(
+          controller: _apptDateCtrl,
+          decoration: appFieldDecoration(
+            'Appointment Date *',
+            prefix: Icons.calendar_today_outlined,
+          ),
+          validator: (v) =>
+              (v == null || v.isEmpty) ? 'Appointment date required' : null,
+        ),
       ),
     );
   }
@@ -588,8 +920,12 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
       controller: _contactCtrl,
       keyboardType: TextInputType.phone,
       inputFormatters: [LengthLimitingTextInputFormatter(16)],
-      onChanged: _onContactChanged,
-      decoration: _inputDeco('Contact number (e.g. +91XXXXXXXXXX)', prefix: Icons.phone_outlined).copyWith(counterText: ''),
+      onChanged: _onLookupChanged,
+      decoration: appFieldDecoration(
+        'Contact Number *',
+        hint: 'e.g. +91XXXXXXXXXX',
+        prefix: Icons.phone_outlined,
+      ).copyWith(counterText: ''),
       validator: PhoneRules.required,
     );
   }
@@ -597,7 +933,18 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   Widget _suggestionDropdown() {
     return Container(
       margin: const EdgeInsets.only(top: 2, bottom: 4),
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(10), border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)), boxShadow: [BoxShadow(color: AppColors.primary.withValues(alpha: 0.08), blurRadius: 8, offset: const Offset(0, 3))]),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.primary.withValues(alpha: 0.18)),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.primary.withValues(alpha: 0.08),
+            blurRadius: 8,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
       child: Column(
         children: _suggestions.map((s) {
           final isLocal = s.type == 'local';
@@ -605,20 +952,67 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
             onTap: () => _fillFromSuggestion(s),
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
-              child: Row(children: [
-                Expanded(
-                  child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    Text(s.fullName, style: TextStyle(fontWeight: FontWeight.w600, fontSize: 13, color: AppColors.primary)),
-                    if (s.age != null || s.gender != null)
-                      Text([if (s.age != null) '${s.age}y', if (s.gender != null) '${s.gender![0].toUpperCase()}${s.gender!.substring(1)}'].join(' · '), style: TextStyle(fontSize: 11, color: AppColors.primary.withValues(alpha: 0.55))),
-                  ]),
-                ),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(color: isLocal ? const Color(0xFFD1FAE5) : const Color(0xFFFFF3CD), borderRadius: BorderRadius.circular(AppRadius.xl), border: Border.all(color: isLocal ? const Color(0xFF10B981) : const Color(0xFFFFC107))),
-                  child: Text(isLocal ? 'Own' : s.hospitalName ?? 'Partner', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: isLocal ? const Color(0xFF065F46) : const Color(0xFF856404))),
-                ),
-              ]),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          s.fullName,
+                          style: TextStyle(
+                            fontWeight: FontWeight.w600,
+                            fontSize: 13,
+                            color: AppColors.primary,
+                          ),
+                        ),
+                        if (s.age != null ||
+                            s.gender != null ||
+                            (s.contactNo ?? '').isNotEmpty)
+                          Text(
+                            [
+                              if (s.age != null) '${s.age}y',
+                              if (s.gender != null)
+                                '${s.gender![0].toUpperCase()}${s.gender!.substring(1)}',
+                              if ((s.contactNo ?? '').isNotEmpty) s.contactNo!,
+                            ].join(' · '),
+                            style: TextStyle(
+                              fontSize: 11,
+                              color: AppColors.primary.withValues(alpha: 0.55),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 3,
+                    ),
+                    decoration: BoxDecoration(
+                      color: isLocal
+                          ? const Color(0xFFD1FAE5)
+                          : const Color(0xFFFFF3CD),
+                      borderRadius: BorderRadius.circular(AppRadius.xl),
+                      border: Border.all(
+                        color: isLocal
+                            ? const Color(0xFF10B981)
+                            : const Color(0xFFFFC107),
+                      ),
+                    ),
+                    child: Text(
+                      isLocal ? 'Own' : s.hospitalName ?? 'Partner',
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w700,
+                        color: isLocal
+                            ? const Color(0xFF065F46)
+                            : const Color(0xFF856404),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         }).toList(),
@@ -626,15 +1020,29 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     );
   }
 
-  Widget _buildDropdown<T>({required T? value, required List<DropdownMenuItem<T>> items, required void Function(T?) onChanged, required String hint, String? Function(T?)? validator}) {
+  Widget _buildDropdown<T>({
+    required T? value,
+    required List<DropdownMenuItem<T>> items,
+    required void Function(T?) onChanged,
+    required String label,
+    String? placeholder,
+    String? Function(T?)? validator,
+  }) {
     return DropdownButtonFormField<T>(
       initialValue: value,
       items: items,
       onChanged: onChanged,
       validator: validator,
-      decoration: _inputDeco(hint),
-      style: TextStyle(color: AppColors.primary, fontSize: 13, fontWeight: FontWeight.w500),
-      icon: Icon(Icons.expand_more_rounded, color: AppColors.primary.withValues(alpha: 0.6)),
+      decoration: appFieldDecoration(label, hint: placeholder),
+      style: TextStyle(
+        color: AppColors.primary,
+        fontSize: 13,
+        fontWeight: FontWeight.w500,
+      ),
+      icon: Icon(
+        Icons.expand_more_rounded,
+        color: AppColors.primary.withValues(alpha: 0.6),
+      ),
       dropdownColor: Colors.white,
       isExpanded: true,
     );
@@ -644,8 +1052,16 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     final cases = _masters?.cases ?? [];
     return _buildDropdown<int>(
       value: _selectedCaseId,
-      hint: 'Select Case Type',
-      items: cases.map((c) => DropdownMenuItem(value: c.id, child: Text(c.name, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+      label: 'Case Type *',
+      placeholder: 'Select case type',
+      items: cases
+          .map(
+            (c) => DropdownMenuItem(
+              value: c.id,
+              child: Text(c.name, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ),
+          )
+          .toList(),
       onChanged: (v) {
         setState(() {
           _selectedCaseId = v;
@@ -663,8 +1079,16 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     final docs = _masters?.doctors ?? [];
     return _buildDropdown<int>(
       value: _selectedDoctorId,
-      hint: 'Select Doctor',
-      items: docs.map((d) => DropdownMenuItem(value: d.id, child: Text(d.name, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+      label: 'Doctor Name *',
+      placeholder: 'Select doctor',
+      items: docs
+          .map(
+            (d) => DropdownMenuItem(
+              value: d.id,
+              child: Text(d.name, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ),
+          )
+          .toList(),
       onChanged: (v) => setState(() => _selectedDoctorId = v),
       validator: (v) => v == null ? 'Doctor required' : null,
     );
@@ -674,8 +1098,16 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     final locs = _masters?.locations ?? [];
     return _buildDropdown<int>(
       value: _selectedLocationId,
-      hint: 'Select City',
-      items: locs.map((l) => DropdownMenuItem(value: l.id, child: Text(l.city, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+      label: 'City *',
+      placeholder: 'Select city',
+      items: locs
+          .map(
+            (l) => DropdownMenuItem(
+              value: l.id,
+              child: Text(l.city, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ),
+          )
+          .toList(),
       onChanged: (v) {
         setState(() {
           _selectedLocationId = v;
@@ -693,8 +1125,12 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
   Widget _genderDropdown() {
     return _buildDropdown<String>(
       value: _selectedGender,
-      hint: 'Gender',
-      items: const [DropdownMenuItem(value: 'male', child: Text('Male')), DropdownMenuItem(value: 'female', child: Text('Female')), DropdownMenuItem(value: 'other', child: Text('Other'))],
+      label: 'Gender *',
+      items: const [
+        DropdownMenuItem(value: 'male', child: Text('Male')),
+        DropdownMenuItem(value: 'female', child: Text('Female')),
+        DropdownMenuItem(value: 'other', child: Text('Other')),
+      ],
       onChanged: (v) => setState(() => _selectedGender = v ?? 'male'),
     );
   }
@@ -703,8 +1139,20 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     final slots = _masters?.slots ?? [];
     return _buildDropdown<int>(
       value: _selectedSlotId,
-      hint: 'No Slot (optional)',
-      items: slots.map((s) => DropdownMenuItem(value: s.id, child: Text(s.display, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+      label: 'Time Slot',
+      placeholder: 'No slot (optional)',
+      items: slots
+          .map(
+            (s) => DropdownMenuItem(
+              value: s.id,
+              child: Text(
+                s.display,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            ),
+          )
+          .toList(),
       onChanged: (v) => setState(() => _selectedSlotId = v),
     );
   }
@@ -713,9 +1161,191 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     final refs = _masters?.referrers ?? [];
     return _buildDropdown<int>(
       value: _selectedReferrerId,
-      hint: 'No Referrer (optional)',
-      items: refs.map((r) => DropdownMenuItem(value: r.id, child: Text(r.name, overflow: TextOverflow.ellipsis, maxLines: 1))).toList(),
+      label: 'Referred By',
+      placeholder: 'No referrer (optional)',
+      items: refs
+          .map(
+            (r) => DropdownMenuItem(
+              value: r.id,
+              child: Text(r.name, overflow: TextOverflow.ellipsis, maxLines: 1),
+            ),
+          )
+          .toList(),
       onChanged: (v) => setState(() => _selectedReferrerId = v),
+    );
+  }
+
+  Widget _buildOtCheckinSection() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      decoration: BoxDecoration(
+        color: AppColors.blue.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: Border.all(color: AppColors.blue.withValues(alpha: 0.20)),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          InkWell(
+            onTap: () => setState(() => _otSearchExpanded = !_otSearchExpanded),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.event_available_outlined,
+                    size: 16,
+                    color: AppColors.blue,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'OT check-in search (optional)',
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.blue,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    _otSearchExpanded
+                        ? Icons.keyboard_arrow_up_rounded
+                        : Icons.keyboard_arrow_down_rounded,
+                    color: AppColors.blue,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          if (_otSearchExpanded)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 0, 14, 14),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  TextFormField(
+                    controller: _otSearchCtrl,
+                    onChanged: _linkedOtAppointmentId == null
+                        ? _onOtSearchChanged
+                        : null,
+                    readOnly: _linkedOtAppointmentId != null,
+                    decoration:
+                        appFieldDecoration(
+                          null,
+                          hint: 'Search by APT number, name or mobile...',
+                          prefix: Icons.search_rounded,
+                        ).copyWith(
+                          suffixIcon: _otSearching
+                              ? const Padding(
+                                  padding: EdgeInsets.all(14),
+                                  child: SizedBox(
+                                    width: 14,
+                                    height: 14,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  ),
+                                )
+                              : (_linkedOtAppointmentId != null
+                                    ? IconButton(
+                                        icon: const Icon(
+                                          Icons.close_rounded,
+                                          size: 18,
+                                        ),
+                                        onPressed: _clearOtLink,
+                                      )
+                                    : null),
+                        ),
+                  ),
+                  if (_otSearchResults.isNotEmpty)
+                    Container(
+                      margin: const EdgeInsets.only(top: 4),
+                      decoration: BoxDecoration(
+                        color: Colors.white,
+                        borderRadius: BorderRadius.circular(AppRadius.md),
+                        border: Border.all(
+                          color: AppColors.primary.withValues(alpha: 0.18),
+                        ),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primary.withValues(alpha: 0.08),
+                            blurRadius: 8,
+                            offset: const Offset(0, 3),
+                          ),
+                        ],
+                      ),
+                      child: Column(
+                        children: _otSearchResults
+                            .map(
+                              (o) => InkWell(
+                                onTap: () => _selectOtAppointment(o),
+                                child: Padding(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 14,
+                                    vertical: 10,
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: Column(
+                                          crossAxisAlignment:
+                                              CrossAxisAlignment.start,
+                                          children: [
+                                            Text(
+                                              '${o.appointmentNumber} — ${o.fullName}',
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.w600,
+                                                fontSize: 13,
+                                                color: AppColors.primary,
+                                              ),
+                                            ),
+                                            Text(
+                                              '${o.mobileNo}${o.doctor != null ? ' · Dr. ${o.doctor!.name}' : ''}',
+                                              style: TextStyle(
+                                                fontSize: 11,
+                                                color: AppColors.primary
+                                                    .withValues(alpha: 0.55),
+                                              ),
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            )
+                            .toList(),
+                      ),
+                    ),
+                  if (_linkedOtAppointmentId != null) ...[
+                    const SizedBox(height: 6),
+                    Row(
+                      children: [
+                        const Icon(
+                          Icons.check_circle_rounded,
+                          size: 14,
+                          color: AppColors.green,
+                        ),
+                        const SizedBox(width: 5),
+                        Text(
+                          'Linked to $_linkedOtAppointmentNumber',
+                          style: const TextStyle(
+                            fontSize: 11.5,
+                            fontWeight: FontWeight.w700,
+                            color: AppColors.green,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ],
+                ],
+              ),
+            ),
+        ],
+      ),
     );
   }
 
@@ -723,41 +1353,54 @@ class _PatientFormScreenState extends State<PatientFormScreen> {
     return Container(
       margin: const EdgeInsets.only(bottom: 12),
       padding: const EdgeInsets.fromLTRB(14, 10, 10, 10),
-      decoration: BoxDecoration(color: const Color(0xFFFDEBD0), borderRadius: BorderRadius.circular(10), border: const Border(left: BorderSide(color: Color(0xFFE67E22), width: 4))),
-      child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        const Icon(Icons.warning_amber_rounded, color: Color(0xFFE67E22), size: 18),
-        const SizedBox(width: 8),
-        const Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Examination Completed', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: Color(0xFF784212))),
-            SizedBox(height: 2),
-            Text('Primary examination has already been done. Changes will not affect examination data.', style: TextStyle(fontSize: 11, color: Color(0xFF784212))),
-          ]),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFDEBD0),
+        borderRadius: BorderRadius.circular(AppRadius.md),
+        border: const Border(
+          left: BorderSide(color: Color(0xFFE67E22), width: 4),
         ),
-        IconButton(icon: const Icon(Icons.close_rounded, size: 16, color: Color(0xFF784212)), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: () => setState(() => _warnDismissed = true)),
-      ]),
-    );
-  }
-
-  Widget _submitButton({required bool isEdit, required bool isPhone}) {
-    final label = isEdit ? 'Update Patient' : isPhone ? 'Register Phone Appointment' : 'Register Patient';
-    return ElevatedButton(
-      onPressed: _submitting ? null : _submit,
-      style: ElevatedButton.styleFrom(
-        backgroundColor: AppColors.primary,
-        foregroundColor: Colors.white,
-        disabledBackgroundColor: AppColors.primary.withValues(alpha: 0.5),
-        padding: const EdgeInsets.symmetric(vertical: 16),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40)),
-        elevation: 2,
       ),
-      child: _submitting
-          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-          : Row(mainAxisAlignment: MainAxisAlignment.center, mainAxisSize: MainAxisSize.min, children: [
-              const Icon(Icons.check_circle_outline_rounded, size: 20),
-              const SizedBox(width: 8),
-              Text(label, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w700)),
-            ]),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(
+            Icons.warning_amber_rounded,
+            color: Color(0xFFE67E22),
+            size: 18,
+          ),
+          const SizedBox(width: 8),
+          const Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Examination Completed',
+                  style: TextStyle(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w700,
+                    color: Color(0xFF784212),
+                  ),
+                ),
+                SizedBox(height: 2),
+                Text(
+                  'Primary examination has already been done. Changes will not affect examination data.',
+                  style: TextStyle(fontSize: 11, color: Color(0xFF784212)),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            icon: const Icon(
+              Icons.close_rounded,
+              size: 16,
+              color: Color(0xFF784212),
+            ),
+            padding: EdgeInsets.zero,
+            constraints: const BoxConstraints(),
+            onPressed: () => setState(() => _warnDismissed = true),
+          ),
+        ],
+      ),
     );
   }
 

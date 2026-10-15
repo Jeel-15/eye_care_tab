@@ -14,13 +14,24 @@ class OtCounsellorService with AuthenticatedService {
 
   Map<String, dynamic> _parse(http.Response res) => parseApiResponse(res);
 
-  Future<({List<OtBookingSummary> items, OtPaginationMeta meta})> fetchBookings({int page = 1, int perPage = 25}) async {
-    final uri = Uri.parse('$_base/ot/counsellor/bookings').replace(queryParameters: {'page': '$page', 'per_page': '$perPage'});
+  /// [filter]: `queue` (awaiting counselling) or `history` (counselled
+  /// onward, date-ranged via [fromDate]/[toDate], both `Y-m-d`, only
+  /// meaningful when `filter=history` — web pull 2026-09-19 Queue/All
+  /// toggle, `FiltersOtDeskLists` trait).
+  Future<({List<OtBookingSummary> items, OtPaginationMeta meta, String filter})> fetchBookings({String filter = 'queue', String? fromDate, String? toDate, int page = 1, int perPage = 25}) async {
+    final uri = Uri.parse('$_base/ot/counsellor/bookings').replace(queryParameters: {
+      'filter': filter,
+      if (fromDate != null) 'from_date': fromDate,
+      if (toDate != null) 'to_date': toDate,
+      'page': '$page',
+      'per_page': '$perPage',
+    });
     final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     final data = body['data'] as Map<String, dynamic>;
     final items = (data['data'] as List? ?? []).map((e) => OtBookingSummary.fromJson(e as Map<String, dynamic>)).toList();
-    return (items: items, meta: OtPaginationMeta.fromJson(data));
+    final echoed = (body['meta'] as Map?)?['filter'] as String? ?? filter;
+    return (items: items, meta: OtPaginationMeta.fromJson(data), filter: echoed);
   }
 
   Future<OtPackageLookupSuggestion?> lookupPackage({required double lensCost, required String roomCategory}) async {

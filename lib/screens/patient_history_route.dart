@@ -20,10 +20,11 @@ class PatientHistoryRoute extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(backgroundColor: AppColors.primary, foregroundColor: Colors.white, elevation: 0, title: Text(patient.fullName)),
-      body: Padding(
-        padding: const EdgeInsets.all(20),
-        child: PatientHistoryScreen(user: user, hospital: hospital, patient: patient, onBack: () => Navigator.pop(context), onNotReady: (label) => showAppSnackBar(context, '$label — not built yet', duration: const Duration(seconds: 2))),
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: PatientHistoryScreen(user: user, hospital: hospital, patient: patient, onBack: () => Navigator.pop(context), onNotReady: (label) => showAppSnackBar(context, '$label — not built yet', duration: const Duration(seconds: 2))),
+        ),
       ),
     );
   }

@@ -1,32 +1,117 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import 'package:flutter/services.dart';
 import 'package:signature/signature.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
+import '../constants/permissions.dart';
 import '../utils/date_format.dart';
+import '../models/ot_assistant_models.dart';
 import '../models/ot_booking_models.dart';
 import '../models/ot_counsellor_models.dart';
 import '../models/ot_inventory_models.dart';
-import '../services/ot_accountant_service.dart';
 import '../services/ot_counsellor_service.dart';
+import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/app_dialog.dart';
 import '../widgets/app_error_state.dart';
 import '../widgets/app_section_header.dart';
-import '../widgets/split_pane_scaffold.dart';
+import '../widgets/detail_card_kit.dart';
+import '../widgets/ot/eye_choice_selector.dart';
+import '../widgets/table_row_action.dart';
+import '../widgets/form_kit.dart';
+import '../widgets/ot_date_range_chip.dart';
+import '../widgets/ot_panel_header.dart';
+import '../widgets/scaled_data_table.dart';
 import '../widgets/skeleton.dart';
 import '../widgets/ot/signature_pad_field.dart';
+import '../widgets/table_pagination_footer.dart';
+import '../widgets/table_tools_bar.dart';
 import '../utils/currency_format.dart';
+import '../utils/ot_status_style.dart';
+import '../utils/view_facts.dart';
+import '../widgets/ot/ot_booking_view_dialog.dart';
+import '../utils/refreshable.dart';
 
-/// Tablet OT Counsellor Dashboard (Round 3 Phase 1) — Pattern A (list +
-/// detail split), matching `PatientsScreen`/`OtAppointmentListScreen` — the
-/// full-screen push this used to open for "Awaiting Counselling" felt like
-/// leaving the tablet app entirely and wasted the wide-screen space (a
-/// centered narrow form with big blank gutters either side). See
-/// OT_WEB_PARITY_FIX_PRD.md §3.4. Web has two tables: "Awaiting Counselling"
-/// (tappable, own queue) and read-only "Payment Status".
+// `payment_status` — unpriced | pending | partially_paid | paid — is the
+// field web's own Payment Status column actually reads (not `ot_status`,
+// which the pre-table version of this screen used, always rendering a flat
+// "Paid"/"Complete" split regardless of the real payment state).
+Color _paymentStatusColor(String? status) => switch (status) {
+      'paid' => AppColors.green,
+      'partially_paid' => AppColors.orange,
+      'pending' => AppColors.orange,
+      _ => AppColors.textDisabled,
+    };
+
+String _paymentStatusLabel(String? status) {
+  if (status == null || status.isEmpty) return '—';
+  return status.split('_').map((w) => w.isEmpty ? w : w[0].toUpperCase() + w.substring(1)).join(' ');
+}
+
+/// Tablet OT Counsellor Dashboard — web-parity table redesign (2026-09-18),
+/// matching `resources/views/hospital/ot/counsellor/dashboard.blade.php`'s
+/// two real DataTables panels exactly: "Awaiting Counselling" (Patient /
+/// Phone / OT Doctor / OT Date / Eye / Surgery Type / Status / Action, each
+/// row's Action opening the Counsel form) and read-only "Payment Status"
+/// (Patient / Phone / OT Date / Package Amount / Status, no Action column)
+/// — each with its own Show-entries + search + "Showing X to Y of Z
+/// entries" pagination, same as the just-completed Patients and OT
+/// Appointments redesigns. No more list+detail split — the Counsel form now
+/// opens as a modal dialog (established `_openWalkInFromOt`/Patients/OT
+/// Appointments pattern) instead of a side detail-pane. All business logic
+/// (load/counselling save/consent save/send-to-billing) is unchanged —
+/// only the presentation moved from split-pane list tiles to table rows.
 ///
-/// **Known gap:** no dedicated endpoint returns the Payment Status queue —
-/// reusing the Accountant "completed" queue as the closest substitute.
+String? _examWhen(DateTime? doneAt, String? doctorName) {
+  if (doneAt == null) return null;
+  final atText = toDisplayDateTime(doneAt);
+  final by = doctorDisplayName(doctorName);
+  return by == null ? atText : '$atText · $by';
+}
+
+Future<void> showOtCounsellorBookingView(BuildContext context, OtBookingSummary item) {
+  final p = item.patient;
+  final statusColor = otStatusColor(item.otStatus);
+  return showRecordView(
+    context,
+    name: p?.fullName ?? 'Patient',
+    pills: [
+      ...patientIdentityPills(p),
+      Pill(OtStatus.label(item.otStatus), bg: statusColor.withValues(alpha: 0.10), fg: statusColor, outlined: true),
+      ExamChip(label: 'Primary', done: p?.primaryDoneAt != null, when: _examWhen(p?.primaryDoneAt, p?.primaryExamination?.doctorName)),
+      ExamChip(label: 'Secondary', done: p?.secondaryDoneAt != null, when: _examWhen(p?.secondaryDoneAt, p?.secondaryExamination?.doctorName)),
+    ],
+    facts: [
+      HeaderFact('Eye', item.eye),
+      HeaderFact('Surgery', item.otType),
+      HeaderFact('Doctor', doctorDisplayName(p?.doctor?.name)),
+      HeaderFact('Visit', formatDateString(p?.appointmentDate, fallback: '')),
+    ],
+    sections: [
+      FactSection('Registration', patientRecordFacts(p, consultingDoctor: false, occupation: true, caseType: true, fee: true, referrer: true, registeredAt: true, markReturning: true)),
+    ],
+  );
+}
+
+Future<void> openOtCounsellingForm(BuildContext context, OtBookingSummary item, {VoidCallback? onBillingSent}) {
+  return showPaneDialog<void>(
+    context,
+    wide: true,
+    barrierDismissible: false,
+    builder: (dCtx) => _CounsellingFormPane(
+      key: ValueKey('counselling-${item.id}'),
+      bookingId: item.id,
+      patientName: item.patient?.fullName ?? 'Patient',
+      onCancel: () => Navigator.pop(dCtx),
+      onBillingSent: () {
+        Navigator.pop(dCtx);
+        onBillingSent?.call();
+      },
+    ),
+  );
+}
+
 class OtCounsellorDashboardScreen extends StatefulWidget {
   const OtCounsellorDashboardScreen({super.key});
 
@@ -34,16 +119,40 @@ class OtCounsellorDashboardScreen extends StatefulWidget {
   State<OtCounsellorDashboardScreen> createState() => _OtCounsellorDashboardScreenState();
 }
 
-enum _PaneMode { list, counselling, consent }
-
-class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScreen> {
-  List<OtBookingSummary> _awaiting = [];
+class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScreen> implements Refreshable {
+  List<OtBookingSummary> _pendingBookings = [];
+  List<OtBookingSummary> _completeBookings = [];
   List<OtBookingSummary> _paymentStatus = [];
   bool _loading = true;
   String? _error;
 
-  _PaneMode _paneMode = _PaneMode.list;
-  OtBookingSummary? _selected;
+  // Web pull 2026-10-05: the Queue/All toggle was removed — three tables
+  // now show simultaneously (Booking Patient / Complete Patient / Payment
+  // Status), each with its own independent date range (defaults to today,
+  // widenable). Matches `OtCounsellorController::dashboard()`'s
+  // `booking_from_date`/`booking_to_date`, `from_date`/`to_date`,
+  // `pay_from_date`/`pay_to_date` exactly.
+  DateTime _bookingFromDate = DateTime.now();
+  DateTime _bookingToDate = DateTime.now();
+  DateTime _completeFromDate = DateTime.now();
+  DateTime _completeToDate = DateTime.now();
+  DateTime _payFromDate = DateTime.now();
+  DateTime _payToDate = DateTime.now();
+
+  final TextEditingController _bookingSearchCtrl = TextEditingController();
+  String _bookingSearch = '';
+  int _bookingPerPage = 10;
+  int _bookingPage = 1;
+
+  final TextEditingController _completeSearchCtrl = TextEditingController();
+  String _completeSearch = '';
+  int _completePerPage = 10;
+  int _completePage = 1;
+
+  final TextEditingController _paymentSearchCtrl = TextEditingController();
+  String _paymentSearch = '';
+  int _paymentPerPage = 10;
+  int _paymentPage = 1;
 
   @override
   void initState() {
@@ -51,22 +160,42 @@ class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScree
     _load();
   }
 
+  @override
+  void dispose() {
+    _bookingSearchCtrl.dispose();
+    _completeSearchCtrl.dispose();
+    _paymentSearchCtrl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Future<void> refreshSilently() => _load();
+
   Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
+    setState(() { _loading = true; _error = null; _bookingPage = 1; _completePage = 1; _paymentPage = 1; });
     try {
-      // Not Future.wait([...]) — the two services' fetchBookings() now
-      // return differently-shaped records (OtAccountantService's gained a
-      // moneySummary field for the Refunds feature), so a homogeneous list
-      // can't statically type them. Starting both futures before awaiting
-      // either keeps this just as concurrent.
-      final awaitingFuture = OtCounsellorService.instance.fetchBookings();
-      final paymentStatusFuture = OtAccountantService.instance.fetchBookings(filter: 'completed');
-      final awaiting = await awaitingFuture;
-      final paymentStatus = await paymentStatusFuture;
+      final results = await Future.wait([
+        OtCounsellorService.instance.fetchBookings(
+          filter: 'queue',
+          fromDate: toIsoDate(_bookingFromDate),
+          toDate: toIsoDate(_bookingToDate),
+        ),
+        OtCounsellorService.instance.fetchBookings(
+          filter: 'history',
+          fromDate: toIsoDate(_completeFromDate),
+          toDate: toIsoDate(_completeToDate),
+        ),
+        OtCounsellorService.instance.fetchBookings(
+          filter: 'payments',
+          fromDate: toIsoDate(_payFromDate),
+          toDate: toIsoDate(_payToDate),
+        ),
+      ]);
       if (mounted) {
         setState(() {
-          _awaiting = awaiting.items;
-          _paymentStatus = paymentStatus.items;
+          _pendingBookings = results[0].items;
+          _completeBookings = results[1].items;
+          _paymentStatus = results[2].filter == 'payments' ? results[2].items : [];
           _loading = false;
         });
       }
@@ -75,205 +204,324 @@ class _OtCounsellorDashboardScreenState extends State<OtCounsellorDashboardScree
     }
   }
 
-  void _openCounselling(OtBookingSummary item) => setState(() { _paneMode = _PaneMode.counselling; _selected = item; });
-
-  void _goToConsent() => setState(() => _paneMode = _PaneMode.consent);
-
-  void _backToCounselling() => setState(() => _paneMode = _PaneMode.counselling);
-
-  void _finishFlow() {
-    setState(() { _paneMode = _PaneMode.list; _selected = null; });
+  void _setBookingDateRange(DateTimeRange r) {
+    setState(() { _bookingFromDate = r.start; _bookingToDate = r.end; });
     _load();
   }
 
-  void _closePane() {
-    setState(() { _paneMode = _PaneMode.list; _selected = null; });
+  void _setCompleteDateRange(DateTimeRange r) {
+    setState(() { _completeFromDate = r.start; _completeToDate = r.end; });
+    _load();
   }
 
-  // Matches web's `optional($booking->surgery_date)->format('d M Y')` exactly.
-  static String? _fmtDate(String? raw) {
-    if (raw == null) return null;
-    final d = DateTime.tryParse(raw);
-    if (d == null) return raw;
-    return toDisplayDate(d);
+  void _setPayDateRange(DateTimeRange r) {
+    setState(() { _payFromDate = r.start; _payToDate = r.end; });
+    _load();
   }
+
+  Future<void> _showBookingView(OtBookingSummary item) => showOtCounsellorBookingView(context, item);
+
+  Future<void> _openCounselling(OtBookingSummary item) => openOtCounsellingForm(context, item, onBillingSent: _load);
+
+  // ── Client-side search + pagination, independently per table (mirrors
+  // web's two separate real DataTables instances) ──────────────────────────
+
+  List<OtBookingSummary> _searchOf(List<OtBookingSummary> items, String query) {
+    final q = query.trim().toLowerCase();
+    if (q.isEmpty) return items;
+    return items.where((it) =>
+        (it.patient?.fullName.toLowerCase().contains(q) ?? false) ||
+        (it.patient?.contactNo?.toLowerCase().contains(q) ?? false) ||
+        (it.otDoctor?.name.toLowerCase().contains(q) ?? false) ||
+        (it.otType?.toLowerCase().contains(q) ?? false)).toList();
+  }
+
+  int _lastPageOf(int total, int perPage) => (perPage <= 0 || total == 0) ? 1 : (total / perPage).ceil().clamp(1, 999999);
+
+  List<OtBookingSummary> _pageOf(List<OtBookingSummary> all, int perPage, int page) {
+    if (perPage <= 0) return all;
+    final start = (page - 1) * perPage;
+    if (start >= all.length) return const [];
+    return all.sublist(start, (start + perPage).clamp(0, all.length));
+  }
+
+  // ── Build ────────────────────────────────────────────────────────────────
 
   @override
   Widget build(BuildContext context) {
-    return SplitPaneScaffold(
-      showDetail: _paneMode != _PaneMode.list,
-      onBack: _closePane,
-      listPane: _buildListPane(),
-      detailPane: _buildDetailPane(),
-      listPaneWidth: 420,
-    );
-  }
-
-  // ── List pane ────────────────────────────────────────────────────────
-
-  Widget _buildListPane() {
-    return Container(
-      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
-          child: Row(children: [
-            Icon(Icons.support_agent_rounded, color: AppColors.primary, size: 20),
-            const SizedBox(width: 8),
-            const Expanded(child: Text('OT Counsellor', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
-            IconButton(onPressed: _loading ? null : _load, icon: Icon(Icons.refresh_rounded, color: AppColors.primary, size: 20), tooltip: 'Refresh'),
-          ]),
-        ),
-        Expanded(
-          child: _loading
-              ? const AppSkeletonList(count: 6, itemHeight: 80)
-              : _error != null
-                  ? AppErrorState(message: _error!, onRetry: _load)
-                  : _buildBody(),
-        ),
-      ]),
-    );
-  }
-
-  Widget _buildBody() {
-    return ListView(padding: const EdgeInsets.fromLTRB(12, 0, 12, 12), children: [
-      const _SectionLabel('Awaiting Counselling'),
-      if (_awaiting.isEmpty) const _EmptyRow('No bookings awaiting counselling.') else ..._awaiting.map((i) => _bookingRow(i, tappable: true)),
-      const SizedBox(height: 24),
-      const _SectionLabel('Payment Status', subtitle: 'Bookings billing has taken payment on'),
-      if (_paymentStatus.isEmpty) const _EmptyRow('No bookings yet.') else ..._paymentStatus.map((i) => _bookingRow(i, tappable: false)),
-    ]);
-  }
-
-  Widget _bookingRow(OtBookingSummary item, {required bool tappable}) {
-    final recommended = item.otStatus == OtStatus.surgeryRecommended;
-    final selected = tappable && _paneMode != _PaneMode.list && _selected?.id == item.id;
-    final date = _fmtDate(item.surgeryDate);
-    final row = Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-      decoration: BoxDecoration(color: selected ? AppColors.primaryA08 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: selected ? AppColors.primary.withValues(alpha: 0.4) : recommended ? AppColors.orange.withValues(alpha: 0.35) : AppColors.primaryA08)),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Row(children: [
-          Expanded(
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(item.patient?.fullName ?? 'Patient', style: const TextStyle(fontSize: 13.5, fontWeight: FontWeight.w700)),
-              const SizedBox(height: 2),
-              Text('${item.patient?.patientCode ?? ''}${item.eye != null ? ' · ${item.eye}' : ''}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary)),
-            ]),
-          ),
-          if (tappable && recommended)
-            Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: AppColors.orangeA12, borderRadius: BorderRadius.circular(AppRadius.sm)), child: const Text('Recommended', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: AppColors.orange)))
-          else if (!tappable)
-            Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: (item.otStatus == OtStatus.paid ? AppColors.orange : AppColors.green).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.sm)), child: Text(item.otStatus == OtStatus.paid ? 'Paid' : 'Complete', style: TextStyle(fontSize: 10, fontWeight: FontWeight.w700, color: item.otStatus == OtStatus.paid ? AppColors.orange : AppColors.green))),
-        ]),
-        const SizedBox(height: 8),
-        Row(children: [
-          if (item.patient?.contactNo != null) ...[Icon(Icons.call_rounded, size: 12, color: AppColors.primary.withValues(alpha: 0.5)), const SizedBox(width: 4), Text(item.patient!.contactNo!, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary))],
-          if (date != null) ...[const SizedBox(width: 10), Icon(Icons.event_rounded, size: 12, color: AppColors.primary.withValues(alpha: 0.5)), const SizedBox(width: 4), Text(date, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary))],
-        ]),
-        if (tappable && (item.otDoctor != null || item.otType != null)) ...[
-          const SizedBox(height: 4),
-          Row(children: [
-            if (item.otDoctor != null) ...[Icon(Icons.medical_services_outlined, size: 12, color: AppColors.primary.withValues(alpha: 0.5)), const SizedBox(width: 4), Text('Dr. ${item.otDoctor!.name}', style: const TextStyle(fontSize: 11, color: AppColors.textSecondary), overflow: TextOverflow.ellipsis)],
-            if (item.otType != null) ...[const SizedBox(width: 10), Expanded(child: Text(item.otType!, style: const TextStyle(fontSize: 11, color: AppColors.textSecondary), overflow: TextOverflow.ellipsis))],
-          ]),
-        ],
-        if (!tappable && item.packageAmount != null) ...[
-          const SizedBox(height: 4),
-          Text('${currentCurrencySymbol()}${item.packageAmount!.toStringAsFixed(0)}', style: const TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w700)),
-        ],
-      ]),
-    );
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 8),
-      child: tappable ? InkWell(onTap: () => _openCounselling(item), borderRadius: BorderRadius.circular(AppRadius.md), child: row) : row,
-    );
-  }
-
-  // ── Detail pane ─────────────────────────────────────────────────────────
-
-  Widget _buildDetailPane() {
-    if (_paneMode == _PaneMode.counselling && _selected != null) {
-      return _panelBox(child: _CounsellingFormPane(key: ValueKey('counselling-${_selected!.id}'), bookingId: _selected!.id, patientName: _selected!.patient?.fullName ?? 'Patient', onSaved: _goToConsent, onCancel: _closePane));
-    }
-    if (_paneMode == _PaneMode.consent && _selected != null) {
-      return _panelBox(child: _ConsentFormPane(key: ValueKey('consent-${_selected!.id}'), bookingId: _selected!.id, patientName: _selected!.patient?.fullName ?? 'Patient', onBack: _backToCounselling, onDone: _finishFlow));
-    }
-    return _panelBox(
-      child: Center(
-        child: Column(mainAxisSize: MainAxisSize.min, children: [
-          Icon(Icons.support_agent_rounded, size: 56, color: AppColors.primaryA22),
-          const SizedBox(height: 12),
-          Text('Tap a booking under "Awaiting Counselling"', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
-          Text('to begin counselling.', style: TextStyle(fontSize: 13, color: AppColors.primaryA55)),
+    if (_loading) return const AppSkeletonList(count: 6, itemHeight: 80);
+    if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
+    return AppRefreshIndicator(
+      onRefresh: _load,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(),
+        padding: const EdgeInsets.only(bottom: 16),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          _buildBookingPanel(),
+          const SizedBox(height: 20),
+          _buildCompletePanel(),
+          const SizedBox(height: 20),
+          _buildPaymentPanel(),
         ]),
       ),
     );
   }
 
-  Widget _panelBox({required Widget child}) {
+  Widget _panelCard({required Widget header, required Widget body}) {
     return Container(
-      padding: const EdgeInsets.all(24),
       decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.lg), boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.06), blurRadius: 10, offset: const Offset(0, 3))]),
-      child: child,
+      clipBehavior: Clip.antiAlias,
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [header, body]),
     );
   }
-}
 
-class _SectionLabel extends StatelessWidget {
-  final String title;
-  final String? subtitle;
-  const _SectionLabel(this.title, {this.subtitle});
+  // ── Booking Patient (pending) ────────────────────────────────────────────
 
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 10, left: 4),
-      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(title, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
-        if (subtitle != null) Text(subtitle!, style: const TextStyle(fontSize: 11.5, color: AppColors.textSecondary)),
+  // Web parity (web pull 2026-10-05, `counsellor/dashboard.blade.php`'s
+  // `#otBookingPatientTable`): Patient / Phone / Eye / Surgery Type /
+  // Status / Action — Action now always shows both View and Counsel
+  // together (web stopped gating them behind a Queue/All toggle).
+  static const _bookingColumns = [
+    ScaledTableColumn('PATIENT', 170, grow: true),
+    ScaledTableColumn('PHONE', 120),
+    ScaledTableColumn('EYE', 60),
+    ScaledTableColumn('SURGERY TYPE', 170, grow: true),
+    ScaledTableColumn('STATUS', 160),
+    ScaledTableColumn('ACTION', 190, hug: true),
+  ];
+
+  Widget _buildBookingPanel() {
+    final all = _searchOf(_pendingBookings, _bookingSearch);
+    final lastPage = _lastPageOf(all.length, _bookingPerPage);
+    final rows = _pageOf(all, _bookingPerPage, _bookingPage);
+    final start = _bookingPerPage <= 0 ? 1 : ((_bookingPage - 1) * _bookingPerPage) + 1;
+    final end = _bookingPerPage <= 0 ? all.length : (_bookingPage * _bookingPerPage).clamp(0, all.length);
+
+    return _panelCard(
+      header: OtPanelHeader(
+        icon: Icons.hourglass_top_rounded,
+        title: 'Booking Patient',
+        actions: [
+          OtDateRangeChip(from: _bookingFromDate, to: _bookingToDate, onChanged: _setBookingDateRange),
+        ],
+      ),
+      body: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TableToolsBar(
+          perPage: _bookingPerPage,
+          onPerPageChanged: (v) => setState(() { _bookingPerPage = v; _bookingPage = 1; }),
+          searchCtrl: _bookingSearchCtrl,
+          onSearchChanged: (v) => setState(() { _bookingSearch = v; _bookingPage = 1; }),
+        ),
+        ScaledDataTable(
+          columns: _bookingColumns,
+          rows: rows.map(_bookingRowCells).toList(),
+          emptyMessage: _bookingSearch.isNotEmpty ? 'No results match your search.' : 'No bookings awaiting counselling in this date range.',
+        ),
+        TablePaginationFooter(
+          total: all.length,
+          currentPage: _bookingPage,
+          lastPage: lastPage,
+          onPrev: () => setState(() => _bookingPage--),
+          onNext: () => setState(() => _bookingPage++),
+          start: start,
+          end: end,
+        ),
       ]),
     );
   }
+
+  List<Widget> _bookingRowCells(OtBookingSummary item) {
+    return [
+      Text(item.patient?.fullName ?? 'Patient', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+      Text(item.patient?.contactNo ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Align(alignment: Alignment.centerLeft, child: item.eye != null ? Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.full)), child: Text(item.eye!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary))) : const Text('—', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
+      Text(item.otType ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Align(alignment: Alignment.centerLeft, child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: otStatusColor(item.otStatus).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.full)), child: Text(OtStatus.label(item.otStatus).toUpperCase(), maxLines: 1, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: otStatusColor(item.otStatus), letterSpacing: 0.3))))),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: Row(mainAxisSize: MainAxisSize.min, children: [
+          TableLabelAction(label: 'View', icon: Icons.visibility_outlined, onTap: () => _showBookingView(item)),
+          const SizedBox(width: 10),
+          TableLabelAction(label: 'Counsel', icon: Icons.forum_rounded, tone: TableLabelTone.primary, onTap: () => _openCounselling(item)),
+        ]),
+      ),
+    ];
+  }
+
+  // ── Complete Patient ─────────────────────────────────────────────────────
+
+  // Web parity (`#otCounsellingTable` on the new layout): same columns as
+  // Booking Patient but read-only (View only) — counselling/consent/billing
+  // for these bookings is already done.
+  static const _completeColumns = [
+    ScaledTableColumn('PATIENT', 170, grow: true),
+    ScaledTableColumn('PHONE', 120),
+    ScaledTableColumn('EYE', 60),
+    ScaledTableColumn('SURGERY TYPE', 170, grow: true),
+    ScaledTableColumn('STATUS', 160),
+    ScaledTableColumn('ACTION', 140, hug: true),
+  ];
+
+  Widget _buildCompletePanel() {
+    final all = _searchOf(_completeBookings, _completeSearch);
+    final lastPage = _lastPageOf(all.length, _completePerPage);
+    final rows = _pageOf(all, _completePerPage, _completePage);
+    final start = _completePerPage <= 0 ? 1 : ((_completePage - 1) * _completePerPage) + 1;
+    final end = _completePerPage <= 0 ? all.length : (_completePage * _completePerPage).clamp(0, all.length);
+
+    return _panelCard(
+      header: OtPanelHeader(
+        icon: Icons.task_alt_rounded,
+        title: 'Complete Patient',
+        actions: [
+          OtDateRangeChip(from: _completeFromDate, to: _completeToDate, onChanged: _setCompleteDateRange),
+        ],
+      ),
+      body: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TableToolsBar(
+          perPage: _completePerPage,
+          onPerPageChanged: (v) => setState(() { _completePerPage = v; _completePage = 1; }),
+          searchCtrl: _completeSearchCtrl,
+          onSearchChanged: (v) => setState(() { _completeSearch = v; _completePage = 1; }),
+        ),
+        ScaledDataTable(
+          columns: _completeColumns,
+          rows: rows.map(_completeRowCells).toList(),
+          emptyMessage: _completeSearch.isNotEmpty ? 'No results match your search.' : 'No bookings in this date range.',
+        ),
+        TablePaginationFooter(
+          total: all.length,
+          currentPage: _completePage,
+          lastPage: lastPage,
+          onPrev: () => setState(() => _completePage--),
+          onNext: () => setState(() => _completePage++),
+          start: start,
+          end: end,
+        ),
+      ]),
+    );
+  }
+
+  List<Widget> _completeRowCells(OtBookingSummary item) {
+    return [
+      Text(item.patient?.fullName ?? 'Patient', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+      Text(item.patient?.contactNo ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Align(alignment: Alignment.centerLeft, child: item.eye != null ? Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.full)), child: Text(item.eye!, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.primary))) : const Text('—', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary))),
+      Text(item.otType ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Align(alignment: Alignment.centerLeft, child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: otStatusColor(item.otStatus).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.full)), child: Text(OtStatus.label(item.otStatus).toUpperCase(), maxLines: 1, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: otStatusColor(item.otStatus), letterSpacing: 0.3))))),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: TableLabelAction(label: 'View', icon: Icons.visibility_outlined, onTap: () => _showBookingView(item)),
+      ),
+    ];
+  }
+
+  // ── Payment Status (read-only) ───────────────────────────────────────────
+
+  // Web parity: `#otPaymentStatusTable` — Patient / Phone / Package Amount /
+  // Status only, no Date column.
+  static const _psColumns = [
+    ScaledTableColumn('PATIENT', 180, grow: true),
+    ScaledTableColumn('PHONE', 130),
+    ScaledTableColumn('PACKAGE AMOUNT', 150),
+    ScaledTableColumn('STATUS', 140),
+  ];
+
+  Widget _buildPaymentPanel() {
+    final all = _searchOf(_paymentStatus, _paymentSearch);
+    final lastPage = _lastPageOf(all.length, _paymentPerPage);
+    final rows = _pageOf(all, _paymentPerPage, _paymentPage);
+    final start = _paymentPerPage <= 0 ? 1 : ((_paymentPage - 1) * _paymentPerPage) + 1;
+    final end = _paymentPerPage <= 0 ? all.length : (_paymentPage * _paymentPerPage).clamp(0, all.length);
+
+    return _panelCard(
+      header: OtPanelHeader(
+        icon: Icons.shield_outlined,
+        title: 'Payment Status',
+        subtitle: 'Bookings billing has taken payment on',
+        actions: [
+          OtDateRangeChip(from: _payFromDate, to: _payToDate, onChanged: _setPayDateRange),
+        ],
+      ),
+      body: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        TableToolsBar(
+          perPage: _paymentPerPage,
+          onPerPageChanged: (v) => setState(() { _paymentPerPage = v; _paymentPage = 1; }),
+          searchCtrl: _paymentSearchCtrl,
+          onSearchChanged: (v) => setState(() { _paymentSearch = v; _paymentPage = 1; }),
+        ),
+        ScaledDataTable(
+          columns: _psColumns,
+          rows: rows.map(_paymentRowCells).toList(),
+          emptyMessage: _paymentSearch.isNotEmpty ? 'No results match your search.' : 'No bookings yet.',
+        ),
+        TablePaginationFooter(
+          total: all.length,
+          currentPage: _paymentPage,
+          lastPage: lastPage,
+          onPrev: () => setState(() => _paymentPage--),
+          onNext: () => setState(() => _paymentPage++),
+          start: start,
+          end: end,
+        ),
+      ]),
+    );
+  }
+
+  List<Widget> _paymentRowCells(OtBookingSummary item) {
+    return [
+      Text(item.patient?.fullName ?? 'Patient', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary)),
+      Text(item.patient?.contactNo ?? '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
+      Text(item.packageAmount != null ? '${currentCurrencySymbol()}${item.packageAmount!.toStringAsFixed(2)}' : '—', maxLines: 1, softWrap: false, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppColors.textSecondary)),
+      Align(alignment: Alignment.centerLeft, child: FittedBox(fit: BoxFit.scaleDown, alignment: Alignment.centerLeft, child: Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3), decoration: BoxDecoration(color: _paymentStatusColor(item.paymentStatus).withValues(alpha: 0.12), borderRadius: BorderRadius.circular(AppRadius.full)), child: Text(_paymentStatusLabel(item.paymentStatus).toUpperCase(), maxLines: 1, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: _paymentStatusColor(item.paymentStatus), letterSpacing: 0.3))))),
+    ];
+  }
 }
 
-class _EmptyRow extends StatelessWidget {
-  final String message;
-  const _EmptyRow(this.message);
-
-  @override
-  Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 4),
-        child: Text(message, style: const TextStyle(fontSize: 12, color: AppColors.textSecondary)),
-      );
-}
-
-// ── Counselling form pane (embedded in the detail pane, not a full screen)
-// — matches _AppointmentFormPane's header/body vocabulary exactly. ─────────
+// ── Counselling form pane (embedded in a modal Dialog — see
+// `_openCounselling` above — not a full screen or side detail-pane) —
+// matches _AppointmentFormPane's header/body vocabulary exactly. ───────────
 
 class _CounsellingFormPane extends StatefulWidget {
   final int bookingId;
   final String patientName;
-  final VoidCallback onSaved;
   final VoidCallback onCancel;
+  final VoidCallback onBillingSent;
 
-  const _CounsellingFormPane({super.key, required this.bookingId, required this.patientName, required this.onSaved, required this.onCancel});
+  const _CounsellingFormPane({super.key, required this.bookingId, required this.patientName, required this.onCancel, required this.onBillingSent});
 
   @override
   State<_CounsellingFormPane> createState() => _CounsellingFormPaneState();
 }
 
+/// Web parity (`ot/counsellor/form.blade.php`): ONE pane holding THREE
+/// independent forms/actions, always simultaneously visible with no
+/// step-gating — Counselling (`storeCounselling`), Informed Consent
+/// (`storeConsent`), and Send to Billing. Previously split into
+/// `_CounsellingFormPane` → `_ConsentFormPane` pane-mode transition; web has
+/// never had that step-by-step structure, so this was merged back into one
+/// pane.
 class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
   static final _genFmt = [FilteringTextInputFormatter.allow(RegExp(r'^\d*\.?\d*'))];
 
   bool _loading = true;
   String? _loadError;
   OtCounsellingDetail? _detail;
-  bool _saving = false;
+  bool _savingCounselling = false;
+
+  bool get _canConsent => PermissionService.instance.can(Perm.otConsentCapture);
+
+  // Usually just `detail.otSurgeryTypes` (the active list) — but if this
+  // booking's already-saved `ot_type` was since deactivated/renamed, it
+  // won't be in that list, and the dropdown would show blank despite the
+  // value being genuinely saved (Bug #3, OT_BUGS_ROUND4_AUDIT.md). Mirrors
+  // the backend's own tolerance for this exact situation
+  // (storeCounselling()'s "already-set-but-since-deactivated" fallback).
+  List<OtSurgeryTypeOption> _surgeryTypeOptions = [];
 
   int? _selectedPackageId;
 
-  late final TextEditingController _diagnosisCtrl, _lensCompanyCtrl, _lensModelCtrl, _estimatedPowerCtrl, _lensCostCtrl, _packageNameCtrl, _otChargesCtrl, _surgeonChargesCtrl, _nursingChargesCtrl, _consumablesChargesCtrl, _notesCtrl;
+  late final TextEditingController _diagnosisCtrl, _lensCompanyCtrl, _lensModelCtrl, _lensCostCtrl, _otChargesCtrl, _surgeonChargesCtrl, _nursingChargesCtrl, _consumablesChargesCtrl;
   String _eye = 'Both';
   // Replaces the old surgery_type_confirmed checkbox — required, matches
   // web exactly. See WEB_PULL_2026_08_07_APP_PARITY_AUDIT.md §7.
@@ -281,12 +529,32 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
   bool _mediclaim = false;
   String _lensCategory = 'standard';
   String? _lensType;
+  // Web pull 2026-10-13: "Estimated Power" → "Lens Power" dropdown sourced
+  // from the active Lens Power master, not a free numeric input. Keeps the
+  // field name `estimated_power` server-side (no rename).
+  double? _estimatedPower;
   String _roomCategory = 'general';
+  // Web parity: this field is a hidden `<input>` on web, only ever set by
+  // the OT Package dropdown's JS, never a control the counsellor types
+  // into directly — no visible field for it here either.
+  String? _packageName;
   String _paymentMode = 'cash';
   // Now required on web (was optional) — null until the user actively
   // answers, so "not yet answered" is distinguishable from "No".
   bool? _bloodReportsVerified;
   bool? _bloodReportsNormal;
+
+  // ── Consent form state ───────────────────────────────────────────────────
+  final _patientSigCtrl = SignatureController(penStrokeWidth: 2, penColor: AppColors.darkNavy);
+  final _guardianSigCtrl = SignatureController(penStrokeWidth: 2, penColor: AppColors.darkNavy);
+  final _witnessCtrl = TextEditingController();
+  bool _consentGiven = false;
+  bool _savingConsent = false;
+  bool _consentSaved = false;
+
+  // ── Send to billing state ────────────────────────────────────────────────
+  bool _sendingToBilling = false;
+  String? _otStatus;
 
   @override
   void initState() {
@@ -294,14 +562,11 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
     _diagnosisCtrl = TextEditingController();
     _lensCompanyCtrl = TextEditingController();
     _lensModelCtrl = TextEditingController();
-    _estimatedPowerCtrl = TextEditingController();
     _lensCostCtrl = TextEditingController(text: '0');
-    _packageNameCtrl = TextEditingController();
     _otChargesCtrl = TextEditingController(text: '0');
     _surgeonChargesCtrl = TextEditingController(text: '0');
     _nursingChargesCtrl = TextEditingController(text: '0');
     _consumablesChargesCtrl = TextEditingController(text: '0');
-    _notesCtrl = TextEditingController();
     for (final c in [_otChargesCtrl, _surgeonChargesCtrl, _nursingChargesCtrl, _consumablesChargesCtrl, _lensCostCtrl]) {
       c.addListener(() => setState(() {}));
     }
@@ -310,9 +575,11 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
 
   @override
   void dispose() {
-    for (final c in [_diagnosisCtrl, _lensCompanyCtrl, _lensModelCtrl, _estimatedPowerCtrl, _lensCostCtrl, _packageNameCtrl, _otChargesCtrl, _surgeonChargesCtrl, _nursingChargesCtrl, _consumablesChargesCtrl, _notesCtrl]) {
+    for (final c in [_diagnosisCtrl, _lensCompanyCtrl, _lensModelCtrl, _lensCostCtrl, _otChargesCtrl, _surgeonChargesCtrl, _nursingChargesCtrl, _consumablesChargesCtrl, _witnessCtrl]) {
       c.dispose();
     }
+    _patientSigCtrl.dispose();
+    _guardianSigCtrl.dispose();
     super.dispose();
   }
 
@@ -331,32 +598,57 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
         setState(() {
           _detail = detail;
           _loading = false;
-          _eye = detail.counselling?.eye ?? detail.booking.eye ?? 'Both';
+          _otStatus = detail.booking.otStatus;
+          _surgeryTypeOptions = detail.otSurgeryTypes;
+          // `eye`/`ot_type` are NOT real columns on the counselling record —
+          // storeCounselling() only ever persists them onto the booking row
+          // (`$booking->update(['eye' => ..., 'ot_type' => ...])`). Reading
+          // them from `detail.counselling` first was always wrong: that
+          // field is either genuinely absent (ot_type — silently null, so
+          // the dropdown showed no selection) or has a model-level fallback
+          // baked in (eye — OtCounsellingItem.fromJson defaults a missing
+          // key to 'Both', which is a non-null value that always won the
+          // old `??` chain before it could ever reach the real value on
+          // `detail.booking`). `detail.booking.eye`/`.otType` are the actual
+          // source of truth and correctly parsed already. See
+          // OT_BUGS_ROUND4_AUDIT.md Bug #3 (live-testing follow-up).
+          _eye = detail.booking.eye ?? 'Both';
+          _otType = detail.booking.otType;
+          if (_otType != null && _surgeryTypeOptions.every((t) => t.surgeryName != _otType)) {
+            _surgeryTypeOptions = [
+              OtSurgeryTypeOption(id: -1, surgeryName: _otType!),
+              ..._surgeryTypeOptions,
+            ];
+          }
           final c = detail.counselling;
           if (c != null) {
             _diagnosisCtrl.text = c.diagnosis ?? '';
-            _otType = c.otType;
             _mediclaim = c.mediclaim;
             _lensCategory = c.lensCategory ?? 'standard';
             _lensCompanyCtrl.text = c.lensCompany ?? '';
             _lensModelCtrl.text = c.lensModel ?? '';
             _lensType = c.lensType;
-            _estimatedPowerCtrl.text = c.estimatedPower?.toString() ?? '';
+            _estimatedPower = c.estimatedPower;
             _lensCostCtrl.text = c.lensCost?.toString() ?? '0';
-            _packageNameCtrl.text = c.packageName ?? '';
+            _packageName = c.packageName;
             _roomCategory = c.roomCategory;
             _otChargesCtrl.text = c.otCharges.toString();
             _surgeonChargesCtrl.text = c.surgeonCharges.toString();
             _nursingChargesCtrl.text = c.nursingCharges.toString();
             _consumablesChargesCtrl.text = c.consumablesCharges.toString();
-            _paymentMode = c.mediclaim ? 'cash' : c.paymentMode;
+            _paymentMode = c.paymentMode;
             _bloodReportsVerified = c.bloodReportsVerified;
             _bloodReportsNormal = c.bloodReportsNormal;
-            _notesCtrl.text = c.notes ?? '';
             // Best-effort: pre-select the matching package option by name +
             // room category (lens_cost is no longer a meaningful match key).
             final match = detail.packageCostOptions.where((p) => p.packageName == c.packageName && p.roomCategory == c.roomCategory).toList();
             if (match.isNotEmpty) _selectedPackageId = match.first.id;
+          }
+          final consent = detail.consent;
+          if (consent != null) {
+            _consentGiven = consent.consentGiven;
+            _witnessCtrl.text = consent.witnessName ?? '';
+            _consentSaved = consent.consentGiven;
           }
         });
       }
@@ -373,7 +665,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
     setState(() {
       _selectedPackageId = pkg.id;
       _roomCategory = pkg.roomCategory;
-      _packageNameCtrl.text = pkg.packageName;
+      _packageName = pkg.packageName;
       _otChargesCtrl.text = pkg.otCharges.toString();
       _surgeonChargesCtrl.text = pkg.surgeonCharges.toString();
       _nursingChargesCtrl.text = pkg.nursingCharges.toString();
@@ -381,7 +673,29 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
     });
   }
 
-  Future<void> _save() async {
+  // Web parity (web pull 2026-10-13): "Lens Power" dropdown sourced from
+  // the active Lens Power master, "★ " prefix for favourites, "+{power}D"
+  // label. A legacy value that no longer matches any active master row
+  // stays selectable as its own "(previously saved)" option, so resaving
+  // the form without touching this field never silently wipes legacy data.
+  Widget _buildLensPowerDropdown() {
+    final powers = _detail?.lensPowers ?? const [];
+    final matchesMaster = _estimatedPower != null && powers.any((p) => p.power == _estimatedPower);
+    return DropdownButtonFormField<double>(
+      initialValue: _estimatedPower,
+      isExpanded: true,
+      decoration: _deco('Lens Power'),
+      items: [
+        for (final p in powers)
+          DropdownMenuItem(value: p.power, child: Text('${p.isFavourite ? '★ ' : ''}+${p.power.toStringAsFixed(2)}D')),
+        if (_estimatedPower != null && !matchesMaster)
+          DropdownMenuItem(value: _estimatedPower, child: Text('+${_estimatedPower!.toStringAsFixed(2)}D (previously saved)')),
+      ],
+      onChanged: (v) => setState(() => _estimatedPower = v),
+    );
+  }
+
+  Future<void> _saveCounselling() async {
     if (_otType == null) {
       showAppSnackBar(context, 'Surgery type is required', isError: true);
       return;
@@ -390,7 +704,7 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
       showAppSnackBar(context, 'Blood reports verified/normal must be answered', isError: true);
       return;
     }
-    setState(() => _saving = true);
+    setState(() => _savingCounselling = true);
     try {
       final counselling = OtCounsellingItem(
         diagnosis: _diagnosisCtrl.text.trim().isEmpty ? null : _diagnosisCtrl.text.trim(),
@@ -401,9 +715,9 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
         lensCompany: _lensCompanyCtrl.text.trim().isEmpty ? null : _lensCompanyCtrl.text.trim(),
         lensModel: _lensModelCtrl.text.trim().isEmpty ? null : _lensModelCtrl.text.trim(),
         lensType: _lensType,
-        estimatedPower: double.tryParse(_estimatedPowerCtrl.text.trim()),
+        estimatedPower: _estimatedPower,
         lensCost: double.tryParse(_lensCostCtrl.text.trim()),
-        packageName: _packageNameCtrl.text.trim().isEmpty ? null : _packageNameCtrl.text.trim(),
+        packageName: _packageName,
         roomCategory: _roomCategory,
         otCharges: double.tryParse(_otChargesCtrl.text.trim()) ?? 0,
         surgeonCharges: double.tryParse(_surgeonChargesCtrl.text.trim()) ?? 0,
@@ -412,249 +726,17 @@ class _CounsellingFormPaneState extends State<_CounsellingFormPane> {
         paymentMode: _paymentMode,
         bloodReportsVerified: _bloodReportsVerified!,
         bloodReportsNormal: _bloodReportsNormal!,
-        notes: _notesCtrl.text.trim().isEmpty ? null : _notesCtrl.text.trim(),
+        notes: null,
       );
       final totalEstimate = await OtCounsellorService.instance.storeCounselling(widget.bookingId, counselling);
       if (!mounted) return;
+      setState(() => _savingCounselling = false);
       showAppSnackBar(context, 'Counselling saved — estimate ${currentCurrencySymbol()}${totalEstimate.toStringAsFixed(0)}', isSuccess: true);
-      widget.onSaved();
     } catch (e) {
       if (mounted) {
-        setState(() => _saving = false);
+        setState(() => _savingCounselling = false);
         showAppSnackBar(context, e.toString().replaceFirst('Exception: ', ''), isError: true);
       }
-    }
-  }
-
-  /// Yes/No pair for a field that's `required boolean` on the backend
-  /// (blood_reports_verified/normal, web pull 2026-08-07 — was an optional
-  /// checkbox defaulting to false before). `null` means "not yet answered",
-  /// checked in `_save()` before submit.
-  Widget _requiredYesNo(String label, bool? value, ValueChanged<bool> onChanged) {
-    return Row(children: [
-      Expanded(child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
-      ChoiceChip(label: const Text('Yes'), selected: value == true, onSelected: (_) => onChanged(true)),
-      const SizedBox(width: 8),
-      ChoiceChip(label: const Text('No'), selected: value == false, onSelected: (_) => onChanged(false)),
-    ]);
-  }
-
-  InputDecoration _deco(String label, {String? suffix}) => InputDecoration(labelText: label, suffixText: suffix, border: const OutlineInputBorder());
-
-  @override
-  Widget build(BuildContext context) {
-    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-      Row(children: [
-        IconButton(icon: Icon(Icons.close_rounded, color: AppColors.primary), onPressed: widget.onCancel, tooltip: 'Close'),
-        Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primaryA10, borderRadius: BorderRadius.circular(AppRadius.md)), child: Icon(Icons.support_agent_rounded, color: AppColors.primary, size: 20)),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Counselling', style: TextStyle(color: AppColors.primary, fontSize: 17, fontWeight: FontWeight.w800)),
-            Text(widget.patientName, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
-          ]),
-        ),
-      ]),
-      const SizedBox(height: 16),
-      Expanded(
-        child: _loading
-            ? const AppSkeletonList(count: 5, itemHeight: 70, padding: EdgeInsets.zero)
-            : _loadError != null
-                ? AppErrorState(message: _loadError!, onRetry: _load)
-                : _buildForm(),
-      ),
-    ]);
-  }
-
-  Widget _buildForm() {
-    final detail = _detail!;
-    return Column(children: [
-      Expanded(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.only(bottom: 12),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            const AppSectionHeader(title: 'Diagnosis & Eye', icon: Icons.assignment_outlined),
-            TextFormField(controller: _diagnosisCtrl, maxLines: 2, decoration: _deco('Diagnosis')),
-            const SizedBox(height: 10),
-            Row(children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(
-                  initialValue: _otType,
-                  isExpanded: true,
-                  decoration: _deco('Surgery Type *'),
-                  items: detail.otSurgeryTypes.map((t) => DropdownMenuItem(value: t.surgeryName, child: Text(t.surgeryName, overflow: TextOverflow.ellipsis))).toList(),
-                  onChanged: (v) => setState(() => _otType = v),
-                ),
-              ),
-              const SizedBox(width: 16),
-              Wrap(spacing: 8, children: ['RE', 'LE', 'Both'].map((e) => ChoiceChip(label: Text(e), selected: _eye == e, onSelected: (_) => setState(() => _eye = e))).toList()),
-              const Spacer(),
-              Row(children: [
-                Checkbox(value: _mediclaim, onChanged: (v) => setState(() => _mediclaim = v ?? false)),
-                const Text('Mediclaim', style: TextStyle(fontSize: 13)),
-              ]),
-            ]),
-            const SizedBox(height: 20),
-
-            const AppSectionHeader(title: 'Lens', icon: Icons.remove_red_eye_outlined),
-            Row(children: [
-              Expanded(
-                child: DropdownButtonFormField<String>(initialValue: _lensType, isExpanded: true, decoration: _deco('Lens Type'), items: kOtLensTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(), onChanged: (v) => setState(() => _lensType = v)),
-              ),
-              const SizedBox(width: 12),
-              Wrap(spacing: 8, children: ['standard', 'premium'].map((c) => ChoiceChip(label: Text(c[0].toUpperCase() + c.substring(1)), selected: _lensCategory == c, onSelected: (_) => setState(() => _lensCategory = c))).toList()),
-            ]),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: TextFormField(controller: _lensCompanyCtrl, decoration: _deco('Lens Company'))),
-              const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _lensModelCtrl, decoration: _deco('Lens Model'))),
-              const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _estimatedPowerCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true, signed: true), inputFormatters: _genFmt, decoration: _deco('Estimated Power', suffix: 'D'))),
-              const SizedBox(width: 12),
-              // Lens Cost is now a plain manual field, decoupled from the
-              // package (web pull 2026-08-07) — typed in and added into
-              // Total Estimate, not autofilled by package selection anymore.
-              Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Lens Cost', suffix: currentCurrencySymbol()))),
-            ]),
-            const SizedBox(height: 20),
-
-            const AppSectionHeader(title: 'Package / Room', icon: Icons.card_giftcard_rounded),
-            DropdownButtonFormField<int>(
-              initialValue: _selectedPackageId,
-              isExpanded: true,
-              decoration: _deco('OT Package'),
-              items: detail.packageCostOptions.map((p) => DropdownMenuItem(value: p.id, child: Text('${p.packageName} · ${p.roomCategory[0].toUpperCase()}${p.roomCategory.substring(1)}', overflow: TextOverflow.ellipsis))).toList(),
-              onChanged: (v) {
-                if (v == null) return;
-                _selectPackage(detail.packageCostOptions.firstWhere((p) => p.id == v));
-              },
-            ),
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, children: ['general', 'private'].map((r) => ChoiceChip(label: Text(r[0].toUpperCase() + r.substring(1)), selected: _roomCategory == r, onSelected: (_) => setState(() => _roomCategory = r))).toList()),
-            const SizedBox(height: 12),
-            TextFormField(controller: _packageNameCtrl, decoration: _deco('Package Name')),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: TextFormField(controller: _otChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('OT Charges', suffix: currentCurrencySymbol()))),
-              const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _surgeonChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Surgeon Charges', suffix: currentCurrencySymbol()))),
-              const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _nursingChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Nursing Charges', suffix: currentCurrencySymbol()))),
-              const SizedBox(width: 12),
-              Expanded(child: TextFormField(controller: _consumablesChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Consumables', suffix: currentCurrencySymbol()))),
-            ]),
-            const SizedBox(height: 12),
-            // Matches web exactly: Total Estimate = ot_charges + surgeon_charges
-            // + nursing_charges + consumables_charges + lens_cost (web pull
-            // 2026-08-07 changed this from lens_cost-only). See
-            // WEB_PULL_2026_08_07_APP_PARITY_AUDIT.md §7.
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-              decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA22)),
-              child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                const Text('Total Estimate', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
-                Text('${currentCurrencySymbol()}${_totalEstimate.toStringAsFixed(2)}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.primary)),
-              ]),
-            ),
-            const SizedBox(height: 20),
-
-            const AppSectionHeader(title: 'Payment & Reports', icon: Icons.receipt_long_outlined),
-            if (!_mediclaim)
-              Wrap(spacing: 8, children: ['cash', 'online'].map((m) => ChoiceChip(label: Text(m[0].toUpperCase() + m.substring(1)), selected: _paymentMode == m, onSelected: (_) => setState(() => _paymentMode = m))).toList())
-            else
-              Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8), decoration: BoxDecoration(color: AppColors.orangeA12, borderRadius: BorderRadius.circular(AppRadius.sm)), child: const Text('Payment mode: Mediclaim', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: AppColors.orange))),
-            const SizedBox(height: 12),
-            Row(children: [
-              Expanded(child: _requiredYesNo('Blood reports verified *', _bloodReportsVerified, (v) => setState(() => _bloodReportsVerified = v))),
-              const SizedBox(width: 20),
-              Expanded(child: _requiredYesNo('Blood reports normal *', _bloodReportsNormal, (v) => setState(() => _bloodReportsNormal = v))),
-            ]),
-            const SizedBox(height: 12),
-            TextFormField(controller: _notesCtrl, maxLines: 3, decoration: _deco('Notes')),
-          ]),
-        ),
-      ),
-      const SizedBox(height: 12),
-      Row(children: [
-        Expanded(
-          child: ElevatedButton(
-            onPressed: _saving ? null : _save,
-            style: ElevatedButton.styleFrom(backgroundColor: AppColors.teal, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40))),
-            child: _saving ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2)) : const Text('Save & Continue to Consent', style: TextStyle(fontWeight: FontWeight.w700)),
-          ),
-        ),
-        const SizedBox(width: 12),
-        OutlinedButton(
-          onPressed: widget.onCancel,
-          style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 24), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(40)), side: BorderSide(color: AppColors.primaryA22)),
-          child: const Text('Cancel'),
-        ),
-      ]),
-    ]);
-  }
-}
-
-// ── Consent form pane (second step, same detail pane, list stays visible
-// throughout — the whole point of this rebuild) ────────────────────────────
-
-class _ConsentFormPane extends StatefulWidget {
-  final int bookingId;
-  final String patientName;
-  final VoidCallback onBack;
-  final VoidCallback onDone;
-
-  const _ConsentFormPane({super.key, required this.bookingId, required this.patientName, required this.onBack, required this.onDone});
-
-  @override
-  State<_ConsentFormPane> createState() => _ConsentFormPaneState();
-}
-
-class _ConsentFormPaneState extends State<_ConsentFormPane> {
-  final _patientSigCtrl = SignatureController(penStrokeWidth: 2, penColor: AppColors.darkNavy);
-  final _guardianSigCtrl = SignatureController(penStrokeWidth: 2, penColor: AppColors.darkNavy);
-  final _witnessCtrl = TextEditingController();
-
-  bool _loading = true;
-  String? _loadError;
-  bool _consentGiven = false;
-  bool _savingConsent = false;
-  bool _sendingToBilling = false;
-  bool _consentSaved = false;
-  String? _otStatus;
-
-  @override
-  void initState() {
-    super.initState();
-    _load();
-  }
-
-  @override
-  void dispose() {
-    _patientSigCtrl.dispose();
-    _guardianSigCtrl.dispose();
-    _witnessCtrl.dispose();
-    super.dispose();
-  }
-
-  Future<void> _load() async {
-    setState(() { _loading = true; _loadError = null; });
-    try {
-      final detail = await OtCounsellorService.instance.fetchCounsellingDetail(widget.bookingId);
-      if (mounted) {
-        setState(() {
-          _loading = false;
-          _otStatus = detail.booking.otStatus;
-          final consent = detail.consent;
-          if (consent != null) {
-            _consentGiven = consent.consentGiven;
-            _witnessCtrl.text = consent.witnessName ?? '';
-            _consentSaved = consent.consentGiven;
-          }
-        });
-      }
-    } catch (e) {
-      if (mounted) setState(() { _loadError = e.toString().replaceFirst('Exception: ', ''); _loading = false; });
     }
   }
 
@@ -691,7 +773,7 @@ class _ConsentFormPaneState extends State<_ConsentFormPane> {
       await OtCounsellorService.instance.sendToBilling(widget.bookingId);
       if (!mounted) return;
       showAppSnackBar(context, 'Sent to Billing', isSuccess: true);
-      widget.onDone();
+      widget.onBillingSent();
     } catch (e) {
       if (mounted) {
         setState(() => _sendingToBilling = false);
@@ -700,16 +782,31 @@ class _ConsentFormPaneState extends State<_ConsentFormPane> {
     }
   }
 
+  /// Yes/No pair for a field that's `required boolean` on the backend
+  /// (blood_reports_verified/normal, web pull 2026-08-07 — was an optional
+  /// checkbox defaulting to false before). `null` means "not yet answered",
+  /// checked in `_saveCounselling()` before submit.
+  Widget _requiredYesNo(String label, bool? value, ValueChanged<bool> onChanged) {
+    return Row(children: [
+      Expanded(child: Text(label, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600))),
+      ChoiceChip(label: const Text('Yes'), selected: value == true, onSelected: (_) => onChanged(true)),
+      const SizedBox(width: 8),
+      ChoiceChip(label: const Text('No'), selected: value == false, onSelected: (_) => onChanged(false)),
+    ]);
+  }
+
+  InputDecoration _deco(String label, {String? suffix}) => appFieldDecoration(label).copyWith(suffixText: suffix);
+
   @override
   Widget build(BuildContext context) {
     return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
       Row(children: [
-        IconButton(icon: Icon(Icons.arrow_back_rounded, color: AppColors.primary), onPressed: widget.onBack, tooltip: 'Back to Counselling'),
-        Container(width: 40, height: 40, decoration: BoxDecoration(color: AppColors.primaryA10, borderRadius: BorderRadius.circular(AppRadius.md)), child: Icon(Icons.draw_rounded, color: AppColors.primary, size: 20)),
+        IconButton(icon: Icon(Icons.close_rounded, color: AppColors.primary), onPressed: widget.onCancel, tooltip: 'Close'),
+        Container(width: 40, height: 40, decoration: BoxDecoration(gradient: LinearGradient(colors: [AppColors.primary, AppColors.blueLight], begin: Alignment.topLeft, end: Alignment.bottomRight), borderRadius: BorderRadius.circular(AppRadius.md)), child: const Icon(Icons.support_agent_rounded, color: Colors.white, size: 20)),
         const SizedBox(width: 12),
         Expanded(
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Text('Consent', style: TextStyle(color: AppColors.primary, fontSize: 17, fontWeight: FontWeight.w800)),
+            Text('Counselling', style: TextStyle(color: AppColors.primary, fontSize: 17, fontWeight: FontWeight.w800)),
             Text(widget.patientName, style: const TextStyle(color: AppColors.textSecondary, fontSize: 11)),
           ]),
         ),
@@ -725,53 +822,179 @@ class _ConsentFormPaneState extends State<_ConsentFormPane> {
     ]);
   }
 
+  // Web parity: one scrollable pane, three independent sections/cards
+  // (Diagnosis/Lens/Package, Informed Consent, Ready for Billing) — no
+  // forced step order, each has its own save action.
   Widget _buildForm() {
     return Column(children: [
       Expanded(
         child: SingleChildScrollView(
           padding: const EdgeInsets.only(bottom: 12),
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-            Container(
-              padding: const EdgeInsets.all(18),
-              decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
-              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                const AppSectionHeader(title: 'Informed Consent', icon: Icons.draw_rounded),
-                Row(children: [
-                  Checkbox(value: _consentGiven, onChanged: (v) => setState(() => _consentGiven = v ?? false)),
-                  const Text('Patient / guardian has given consent', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
-                ]),
-                const SizedBox(height: 12),
-                Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Expanded(child: SignaturePadField(label: 'Patient Signature', controller: _patientSigCtrl, height: 200)),
-                  const SizedBox(width: 20),
-                  Expanded(child: SignaturePadField(label: 'Guardian Signature (optional)', controller: _guardianSigCtrl, height: 200)),
-                ]),
-                const SizedBox(height: 20),
-                SizedBox(
-                  width: 400,
-                  child: TextFormField(controller: _witnessCtrl, decoration: const InputDecoration(labelText: 'Witness Name', border: OutlineInputBorder())),
-                ),
-              ]),
-            ),
-            const SizedBox(height: 20),
+            _buildCounsellingSection(),
+            const SizedBox(height: 24),
+            if (_canConsent) ...[
+              _buildConsentSection(),
+              const SizedBox(height: 24),
+            ],
             _buildBillingCard(),
           ]),
         ),
       ),
-      const SizedBox(height: 12),
-      Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-        OutlinedButton(
-          onPressed: _savingConsent ? null : _saveConsent,
-          style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md))),
-          child: _savingConsent ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2)) : const Text('Save Consent'),
-        ),
-      ]),
     ]);
   }
 
+  Widget _buildCounsellingSection() {
+    final detail = _detail!;
+    return Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+      const AppSectionHeader(title: 'Diagnosis, Lens & Package', icon: Icons.assignment_outlined),
+      TextFormField(controller: _diagnosisCtrl, maxLines: 2, decoration: _deco('Diagnosis')),
+      const SizedBox(height: 10),
+      DropdownButtonFormField<String>(
+        initialValue: _otType,
+        isExpanded: true,
+        decoration: _deco('Surgery Type *'),
+        items: _surgeryTypeOptions.map((t) => DropdownMenuItem(value: t.surgeryName, child: Text(t.surgeryName, overflow: TextOverflow.ellipsis))).toList(),
+        onChanged: (v) => setState(() => _otType = v),
+      ),
+      const SizedBox(height: 14),
+      EyeChoiceSelector(value: _eye, onChanged: (e) => setState(() => _eye = e)),
+      const SizedBox(height: 20),
+
+      const AppSectionHeader(title: 'Lens Selection', icon: Icons.remove_red_eye_outlined),
+      Row(children: [
+        Expanded(
+          child: DropdownButtonFormField<String>(initialValue: _lensType, isExpanded: true, decoration: _deco('Lens Type'), items: kOtLensTypes.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(), onChanged: (v) => setState(() => _lensType = v)),
+        ),
+        const SizedBox(width: 12),
+        Wrap(spacing: 8, children: ['standard', 'premium'].map((c) => ChoiceChip(label: Text(c[0].toUpperCase() + c.substring(1)), selected: _lensCategory == c, onSelected: (_) => setState(() => _lensCategory = c))).toList()),
+      ]),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(child: TextFormField(controller: _lensCompanyCtrl, decoration: _deco('Lens Company'))),
+        const SizedBox(width: 12),
+        Expanded(child: TextFormField(controller: _lensModelCtrl, decoration: _deco('Lens Model'))),
+        const SizedBox(width: 12),
+        Expanded(child: _buildLensPowerDropdown()),
+      ]),
+      const SizedBox(height: 20),
+
+      // Web parity: always visible to anyone who can open this page — web
+      // has no separate permission gate for this section (ot_package_set is
+      // defined but never enforced anywhere for this screen;
+      // ot_counselling_fill alone is what gates page access).
+      const AppSectionHeader(title: 'Package & Cost Estimate', icon: Icons.card_giftcard_rounded),
+      DropdownButtonFormField<int>(
+        initialValue: _selectedPackageId,
+        isExpanded: true,
+        decoration: _deco('OT Package'),
+        items: detail.packageCostOptions.map((p) => DropdownMenuItem(value: p.id, child: Text('${p.packageName} · ${p.roomCategory[0].toUpperCase()}${p.roomCategory.substring(1)}', overflow: TextOverflow.ellipsis))).toList(),
+        onChanged: (v) {
+          if (v == null) return;
+          _selectPackage(detail.packageCostOptions.firstWhere((p) => p.id == v));
+        },
+      ),
+      const SizedBox(height: 12),
+      Wrap(spacing: 8, children: ['general', 'private'].map((r) => ChoiceChip(label: Text(r[0].toUpperCase() + r.substring(1)), selected: _roomCategory == r, onSelected: (_) => setState(() => _roomCategory = r))).toList()),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(child: TextFormField(controller: _otChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('OT Charges', suffix: currentCurrencySymbol()))),
+        const SizedBox(width: 12),
+        Expanded(child: TextFormField(controller: _surgeonChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Surgeon Charges', suffix: currentCurrencySymbol()))),
+        const SizedBox(width: 12),
+        Expanded(child: TextFormField(controller: _nursingChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Nursing Charges', suffix: currentCurrencySymbol()))),
+        const SizedBox(width: 12),
+        Expanded(child: TextFormField(controller: _consumablesChargesCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Consumables', suffix: currentCurrencySymbol()))),
+        const SizedBox(width: 12),
+        // Web parity: Lens Cost lives in the Package/Cost section (next to
+        // Nursing/Consumables), not in Lens Selection — it's decoupled from
+        // package selection (manually typed, folded into Total Estimate).
+        Expanded(child: TextFormField(controller: _lensCostCtrl, keyboardType: const TextInputType.numberWithOptions(decimal: true), inputFormatters: _genFmt, decoration: _deco('Lens Cost', suffix: currentCurrencySymbol()))),
+      ]),
+      const SizedBox(height: 12),
+      // Matches web exactly: Total Estimate = ot_charges + surgeon_charges
+      // + nursing_charges + consumables_charges + lens_cost (web pull
+      // 2026-08-07 changed this from lens_cost-only). See
+      // WEB_PULL_2026_08_07_APP_PARITY_AUDIT.md §7.
+      Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(color: AppColors.primaryA08, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA22)),
+        child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          const Text('Total Estimate', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+          Text('${currentCurrencySymbol()}${_totalEstimate.toStringAsFixed(2)}', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.primary)),
+        ]),
+      ),
+      const SizedBox(height: 20),
+
+      // Web parity: Mediclaim lives here — right after Total Estimate,
+      // before Payment Mode — not up near Surgery Type/Eye.
+      Row(children: [
+        Checkbox(value: _mediclaim, onChanged: (v) => setState(() => _mediclaim = v ?? false)),
+        const Text('Mediclaim', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+      ]),
+      const SizedBox(height: 8),
+      // Web pull 2026-10-13 (same one that dropped the counselling form's
+      // old mediclaim↔payment_mode JS auto-sync): Mediclaim and Payment
+      // Mode are independent fields now — a mediclaim booking can still be
+      // paid cash/online, and a non-mediclaim one can still route through
+      // "Mediclaim" as its payment mode. Previously this hid Cash/Online
+      // entirely whenever Mediclaim was checked.
+      Wrap(spacing: 8, children: ['cash', 'online', 'mediclaim'].map((m) => ChoiceChip(label: Text(m[0].toUpperCase() + m.substring(1)), selected: _paymentMode == m, onSelected: (_) => setState(() => _paymentMode = m))).toList()),
+      const SizedBox(height: 12),
+      Row(children: [
+        Expanded(child: _requiredYesNo('Blood reports verified *', _bloodReportsVerified, (v) => setState(() => _bloodReportsVerified = v))),
+        const SizedBox(width: 20),
+        Expanded(child: _requiredYesNo('Blood reports normal *', _bloodReportsNormal, (v) => setState(() => _bloodReportsNormal = v))),
+      ]),
+      const SizedBox(height: 16),
+      Align(
+        alignment: Alignment.centerLeft,
+        child: SizedBox(
+          width: 220,
+          child: AppPrimaryButton(label: 'Save Counselling', icon: Icons.save_rounded, color: AppColors.teal, loading: _savingCounselling, onPressed: _saveCounselling),
+        ),
+      ),
+    ]);
+  }
+
+  Widget _buildConsentSection() {
+    return Container(
+      padding: const EdgeInsets.all(18),
+      decoration: BoxDecoration(color: Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: AppColors.primaryA08)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        const AppSectionHeader(title: 'Informed Consent', icon: Icons.draw_rounded),
+        Row(children: [
+          Checkbox(value: _consentGiven, onChanged: (v) => setState(() => _consentGiven = v ?? false)),
+          const Text('Patient / guardian has given consent', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600)),
+        ]),
+        const SizedBox(height: 12),
+        // Web parity: Witness Name comes right after Consent Given, before
+        // the signature pads.
+        SizedBox(
+          width: 400,
+          child: TextFormField(controller: _witnessCtrl, decoration: appFieldDecoration('Witness Name')),
+        ),
+        const SizedBox(height: 20),
+        Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Expanded(child: SignaturePadField(label: 'Patient Signature', controller: _patientSigCtrl, height: 200)),
+          const SizedBox(width: 20),
+          Expanded(child: SignaturePadField(label: 'Guardian Signature (optional)', controller: _guardianSigCtrl, height: 200)),
+        ]),
+        const SizedBox(height: 16),
+        Align(
+          alignment: Alignment.centerLeft,
+          child: SizedBox(
+            width: 180,
+            child: AppPrimaryButton(label: 'Save Consent', icon: Icons.draw_rounded, loading: _savingConsent, onPressed: _saveConsent),
+          ),
+        ),
+      ]),
+    );
+  }
+
   // Matches web's separate "Ready for Billing?" card exactly — its own
-  // section with a status subtitle, not just a button glued onto the
-  // Consent form's action row.
+  // section with a status subtitle, not just a button glued onto another
+  // form's action row.
   Widget _buildBillingCard() {
     final alreadySent = _otStatus == OtStatus.counselled;
     return Container(
@@ -783,17 +1006,19 @@ class _ConsentFormPaneState extends State<_ConsentFormPane> {
           child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             const Text('Ready for Billing?', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
             const SizedBox(height: 4),
-            const Text('Requires counselling saved and consent given.', style: TextStyle(fontSize: 12, color: AppColors.textSecondary)),
+            const Text('Requires counselling saved and consent given.', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary)),
           ]),
         ),
         const SizedBox(width: 16),
-        ElevatedButton.icon(
-          onPressed: (alreadySent || !_consentSaved || _sendingToBilling) ? null : _sendToBilling,
-          icon: alreadySent ? const Icon(Icons.check_circle_outline_rounded, size: 18) : const Icon(Icons.send_rounded, size: 18),
-          label: _sendingToBilling
-              ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(color: Colors.white, strokeWidth: 2))
-              : Text(alreadySent ? 'Already Sent to Billing' : 'Send to Billing', style: const TextStyle(fontWeight: FontWeight.w700)),
-          style: ElevatedButton.styleFrom(backgroundColor: AppColors.green, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 14), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md))),
+        SizedBox(
+          width: 210,
+          child: AppPrimaryButton(
+            label: alreadySent ? 'Already Sent to Billing' : 'Send to Billing',
+            icon: alreadySent ? Icons.check_circle_outline_rounded : Icons.send_rounded,
+            color: AppColors.green,
+            loading: _sendingToBilling,
+            onPressed: (alreadySent || !_consentSaved || _sendingToBilling) ? null : _sendToBilling,
+          ),
         ),
       ]),
     );

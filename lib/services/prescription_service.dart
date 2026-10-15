@@ -17,6 +17,17 @@ class PrescriptionService {
     required ExamRecord exam,
     required PatientHistorySummary patient,
     String? hospitalLogoUrl,
+    // Web's Settings → Print "Letter Pad" toggle (hospital_setting
+    // 'letter_pad') — 'available' means the hospital prints on physical
+    // pre-branded letterhead paper, so the digital header stays minimal
+    // (just leaves the top blank for it, same intent as
+    // hospital/exam/print.blade.php's `$letterPad === 'available'` branch,
+    // which also drops the logo/name/address block entirely). Web's own
+    // branded-header fields (address/phone/email) aren't shown by this
+    // native PDF either way — this only wires up the toggle itself, not a
+    // full redesign of the existing header's content. See client report
+    // 2026-10-14.
+    bool letterPadAvailable = false,
   }) async {
     final doc = pw.Document();
     final rxLines = exam.prescriptions;
@@ -36,27 +47,43 @@ class PrescriptionService {
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
           // ── Header ────────────────────────────────────────────────────────
-          pw.Center(
-            child: pw.Column(children: [
-              if (logo != null) ...[
-                pw.Image(logo, height: 40, fit: pw.BoxFit.contain),
-                pw.SizedBox(height: 6),
-              ],
-              pw.Text(
-                hospitalName,
-                style: pw.TextStyle(
-                  fontSize: 20,
-                  fontWeight: pw.FontWeight.bold,
+          // letterPadAvailable: physical letterhead handles the branding —
+          // leave the top blank/minimal instead of self-branding, matching
+          // web's print.blade.php `$letterPad === 'available'` branch.
+          if (letterPadAvailable)
+            pw.Padding(
+              padding: const pw.EdgeInsets.only(bottom: 24),
+              child: pw.Align(
+                alignment: pw.Alignment.centerRight,
+                child: pw.Text(
+                  'Dr. $doctorName  ·  $dateStr',
+                  style: const pw.TextStyle(fontSize: 11, color: PdfColors.grey700),
                 ),
               ),
-              pw.SizedBox(height: 2),
-              pw.Text(
-                'Prescription',
-                style: const pw.TextStyle(fontSize: 13, color: PdfColors.grey700),
-              ),
-            ]),
-          ),
-          pw.Divider(color: PdfColors.grey400, height: 20),
+            )
+          else ...[
+            pw.Center(
+              child: pw.Column(children: [
+                if (logo != null) ...[
+                  pw.Image(logo, height: 40, fit: pw.BoxFit.contain),
+                  pw.SizedBox(height: 6),
+                ],
+                pw.Text(
+                  hospitalName,
+                  style: pw.TextStyle(
+                    fontSize: 20,
+                    fontWeight: pw.FontWeight.bold,
+                  ),
+                ),
+                pw.SizedBox(height: 2),
+                pw.Text(
+                  'Prescription',
+                  style: const pw.TextStyle(fontSize: 13, color: PdfColors.grey700),
+                ),
+              ]),
+            ),
+            pw.Divider(color: PdfColors.grey400, height: 20),
+          ],
 
           // ── Patient info row ───────────────────────────────────────────────
           pw.Row(

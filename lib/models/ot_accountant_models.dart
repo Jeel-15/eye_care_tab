@@ -9,56 +9,29 @@ import 'patient_models.dart';
 /// Payment Completed=green / Partially Paid=info-blue / Package Not
 /// Set=grey (unpriced) / Payment Pending=amber.
 Color paymentStatusColor(String status) => switch (status) {
-      'paid' => AppColors.green,
-      'partially_paid' => AppColors.blue,
-      'unpriced' => AppColors.textDisabled,
-      _ => AppColors.orange,
-    };
+  'paid' => AppColors.green,
+  'partially_paid' => AppColors.blue,
+  'unpriced' => AppColors.textDisabled,
+  _ => AppColors.orange,
+};
 
-String paymentStatusLabel(String status) => switch (status) {
-      'paid' => 'Payment Completed',
+/// Web uses two different wordings for the same 4 statuses depending on
+/// screen: the Accountant dashboard list + payment receipts say "Payment
+/// Completed"/"Payment Pending" (`accountant/dashboard.blade.php`,
+/// `_payment-view-modal.blade.php`, `accountant-panel.blade.php`), while
+/// every other OT screen — Assistant, Ward, Discharge, the Record Payment
+/// form — just says "Paid"/"Pending" (`assistant/dashboard.blade.php`,
+/// `ward/show.blade.php`, `discharge/_view-modal.blade.php`,
+/// `accountant/payment.blade.php`). Default to the short form (the
+/// majority) and pass `verbose: true` only at the handful of call sites
+/// that mirror the Accountant dashboard/receipt screens.
+String paymentStatusLabel(String status, {bool verbose = false}) =>
+    switch (status) {
+      'paid' => verbose ? 'Payment Completed' : 'Paid',
       'partially_paid' => 'Partially Paid',
       'unpriced' => 'Package Not Set',
-      _ => 'Payment Pending',
+      _ => verbose ? 'Payment Pending' : 'Pending',
     };
-
-/// A single payment record — exact field set not spelled out in the
-/// contract beyond "payments[]"/"payment (with booking.patient,
-/// recordedBy)"; modeled from the `POST .../payments` body shape (the
-/// natural mirror of what gets stored) plus the obvious display fields.
-/// Verify against a live response once the backend is reachable (§1).
-class OtPaymentEntry {
-  final int id;
-  final double packageAmount;
-  final String? receiptNumber;
-  final String paymentMode; // cash | online | mediclaim
-  final bool hasMediclaim;
-  // Web's receipt uses `paid_at` (the business "when was this paid"
-  // timestamp, set explicitly in storePayment()) — not `created_at`, which
-  // is just Eloquent's row-insert timestamp and can read a few ms earlier.
-  final String? paidAt;
-  final OtNamedRef? recordedBy;
-
-  const OtPaymentEntry({
-    required this.id,
-    required this.packageAmount,
-    this.receiptNumber,
-    required this.paymentMode,
-    this.hasMediclaim = false,
-    this.paidAt,
-    this.recordedBy,
-  });
-
-  factory OtPaymentEntry.fromJson(Map<String, dynamic> j) => OtPaymentEntry(
-        id: j['id'] as int,
-        packageAmount: numOrStringToDouble(j['package_amount']) ?? 0,
-        receiptNumber: j['receipt_number'] as String?,
-        paymentMode: j['payment_mode'] as String? ?? 'cash',
-        hasMediclaim: j['has_mediclaim'] as bool? ?? false,
-        paidAt: j['paid_at'] as String? ?? j['created_at'] as String?,
-        recordedBy: j['recorded_by'] != null ? OtNamedRef.fromJson(j['recorded_by'] as Map<String, dynamic>) : null,
-      );
-}
 
 /// `GET .../payment-status` — always derived live, never a stored/stale
 /// column.
@@ -78,12 +51,14 @@ class OtPaymentStatus {
   });
 
   factory OtPaymentStatus.fromJson(Map<String, dynamic> j) => OtPaymentStatus(
-        paymentStatus: j['payment_status'] as String? ?? 'unpriced',
-        requiredTotal: numOrStringToDouble(j['required_total']) ?? 0,
-        totalPaid: numOrStringToDouble(j['total_paid']) ?? 0,
-        remainingBalance: numOrStringToDouble(j['remaining_balance']) ?? 0,
-        payments: (j['payments'] as List? ?? []).map((e) => OtPaymentEntry.fromJson(e as Map<String, dynamic>)).toList(),
-      );
+    paymentStatus: j['payment_status'] as String? ?? 'unpriced',
+    requiredTotal: numOrStringToDouble(j['required_total']) ?? 0,
+    totalPaid: numOrStringToDouble(j['total_paid']) ?? 0,
+    remainingBalance: numOrStringToDouble(j['remaining_balance']) ?? 0,
+    payments: (j['payments'] as List? ?? [])
+        .map((e) => OtPaymentEntry.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
 }
 
 /// `GET .../payment-form-data` — lazily auto-creates the OT invoice on
@@ -113,18 +88,24 @@ class OtPaymentFormData {
     this.invoiceNumber,
   });
 
-  double get remainingBalance => (requiredTotal - totalPaidSoFar).clamp(0, double.infinity);
+  double get remainingBalance =>
+      (requiredTotal - totalPaidSoFar).clamp(0, double.infinity);
 
-  factory OtPaymentFormData.fromJson(Map<String, dynamic> j) => OtPaymentFormData(
-        booking: OtBookingSummary.fromJson(j['booking'] as Map<String, dynamic>),
-        counselling: j['counselling'] != null ? OtCounsellingItem.fromJson(j['counselling'] as Map<String, dynamic>) : null,
-        defaultPackageAmount: numOrStringToDouble(j['default_package_amount']) ?? 0,
-        totalPaidSoFar: numOrStringToDouble(j['total_paid_so_far']) ?? 0,
-        requiredTotal: numOrStringToDouble(j['required_total']) ?? 0,
-        autoReceiptNumber: j['auto_receipt_number'] as String? ?? '',
-        defaultPaymentMode: j['default_payment_mode'] as String? ?? 'cash',
-        invoiceNumber: (j['invoice'] as Map<String, dynamic>?)?['invoice_number'] as String?,
-      );
+  factory OtPaymentFormData.fromJson(
+    Map<String, dynamic> j,
+  ) => OtPaymentFormData(
+    booking: OtBookingSummary.fromJson(j['booking'] as Map<String, dynamic>),
+    counselling: j['counselling'] != null
+        ? OtCounsellingItem.fromJson(j['counselling'] as Map<String, dynamic>)
+        : null,
+    defaultPackageAmount: numOrStringToDouble(j['default_package_amount']) ?? 0,
+    totalPaidSoFar: numOrStringToDouble(j['total_paid_so_far']) ?? 0,
+    requiredTotal: numOrStringToDouble(j['required_total']) ?? 0,
+    autoReceiptNumber: j['auto_receipt_number'] as String? ?? '',
+    defaultPaymentMode: j['default_payment_mode'] as String? ?? 'cash',
+    invoiceNumber:
+        (j['invoice'] as Map<String, dynamic>?)?['invoice_number'] as String?,
+  );
 }
 
 /// Result of `POST .../payments` — `ot_status` auto-flips to
@@ -136,14 +117,19 @@ class OtPaymentResult {
   final bool isFullyPaid;
   final double remainingBalance;
 
-  const OtPaymentResult({required this.paymentId, required this.otStatus, required this.isFullyPaid, required this.remainingBalance});
+  const OtPaymentResult({
+    required this.paymentId,
+    required this.otStatus,
+    required this.isFullyPaid,
+    required this.remainingBalance,
+  });
 
   factory OtPaymentResult.fromJson(Map<String, dynamic> j) => OtPaymentResult(
-        paymentId: j['payment_id'] as int,
-        otStatus: j['ot_status'] as String? ?? '',
-        isFullyPaid: j['is_fully_paid'] as bool? ?? false,
-        remainingBalance: numOrStringToDouble(j['remaining_balance']) ?? 0,
-      );
+    paymentId: j['payment_id'] as int,
+    otStatus: j['ot_status'] as String? ?? '',
+    isFullyPaid: j['is_fully_paid'] as bool? ?? false,
+    remainingBalance: numOrStringToDouble(j['remaining_balance']) ?? 0,
+  );
 }
 
 /// Per-tenant money-summary card shown on the Accountant dashboard (web:
@@ -156,14 +142,74 @@ class OtMoneySummary {
   final int refundsPending;
   final double net;
 
-  const OtMoneySummary({required this.collected, required this.refunded, required this.refundsPending, required this.net});
+  const OtMoneySummary({
+    required this.collected,
+    required this.refunded,
+    required this.refundsPending,
+    required this.net,
+  });
 
   factory OtMoneySummary.fromJson(Map<String, dynamic> j) => OtMoneySummary(
-        collected: numOrStringToDouble(j['collected']) ?? 0,
-        refunded: numOrStringToDouble(j['refunded']) ?? 0,
-        refundsPending: j['refunds_pending'] as int? ?? 0,
-        net: numOrStringToDouble(j['net']) ?? 0,
-      );
+    collected: numOrStringToDouble(j['collected']) ?? 0,
+    refunded: numOrStringToDouble(j['refunded']) ?? 0,
+    refundsPending: j['refunds_pending'] as int? ?? 0,
+    net: numOrStringToDouble(j['net']) ?? 0,
+  );
+}
+
+class OtMoneyLine {
+  final String? at;
+  final String patient;
+  final double amount;
+  final String mode;
+
+  const OtMoneyLine({
+    required this.at,
+    required this.patient,
+    required this.amount,
+    required this.mode,
+  });
+
+  factory OtMoneyLine.fromJson(Map<String, dynamic> j) => OtMoneyLine(
+    at: j['at'] as String?,
+    patient: j['patient'] as String? ?? '—',
+    amount: numOrStringToDouble(j['amount']) ?? 0,
+    mode: j['mode'] as String? ?? '',
+  );
+}
+
+class OtMoneyReport {
+  final String startDate;
+  final String endDate;
+  final double collected;
+  final double refunded;
+  final double net;
+  final List<OtMoneyLine> payments;
+  final List<OtMoneyLine> refunds;
+
+  const OtMoneyReport({
+    required this.startDate,
+    required this.endDate,
+    required this.collected,
+    required this.refunded,
+    required this.net,
+    required this.payments,
+    required this.refunds,
+  });
+
+  factory OtMoneyReport.fromJson(Map<String, dynamic> j) => OtMoneyReport(
+    startDate: j['start_date'] as String? ?? '',
+    endDate: j['end_date'] as String? ?? '',
+    collected: numOrStringToDouble(j['collected']) ?? 0,
+    refunded: numOrStringToDouble(j['refunded']) ?? 0,
+    net: numOrStringToDouble(j['net']) ?? 0,
+    payments: (j['payments'] as List? ?? [])
+        .map((e) => OtMoneyLine.fromJson(e as Map<String, dynamic>))
+        .toList(),
+    refunds: (j['refunds'] as List? ?? [])
+        .map((e) => OtMoneyLine.fromJson(e as Map<String, dynamic>))
+        .toList(),
+  );
 }
 
 /// `GET .../refund-form-data` — only reachable for `surgery_refused`
@@ -186,12 +232,12 @@ class OtRefundFormData {
   });
 
   factory OtRefundFormData.fromJson(Map<String, dynamic> j) => OtRefundFormData(
-        booking: OtBookingSummary.fromJson(j['booking'] as Map<String, dynamic>),
-        totalPaid: numOrStringToDouble(j['total_paid']) ?? 0,
-        totalRefunded: numOrStringToDouble(j['total_refunded']) ?? 0,
-        refundAmount: numOrStringToDouble(j['refund_amount']) ?? 0,
-        autoReceiptNumber: j['auto_receipt_number'] as String? ?? '',
-      );
+    booking: OtBookingSummary.fromJson(j['booking'] as Map<String, dynamic>),
+    totalPaid: numOrStringToDouble(j['total_paid']) ?? 0,
+    totalRefunded: numOrStringToDouble(j['total_refunded']) ?? 0,
+    refundAmount: numOrStringToDouble(j['refund_amount']) ?? 0,
+    autoReceiptNumber: j['auto_receipt_number'] as String? ?? '',
+  );
 }
 
 /// Result of `POST .../refunds` — a raw `OtRefund` row.
@@ -202,9 +248,9 @@ class OtRefundResult {
   const OtRefundResult({required this.amount, this.receiptNumber});
 
   factory OtRefundResult.fromJson(Map<String, dynamic> j) => OtRefundResult(
-        amount: numOrStringToDouble(j['amount']) ?? 0,
-        receiptNumber: j['receipt_number'] as String?,
-      );
+    amount: numOrStringToDouble(j['amount']) ?? 0,
+    receiptNumber: j['receipt_number'] as String?,
+  );
 }
 
 class OtPaymentReceipt {
@@ -217,7 +263,13 @@ class OtPaymentReceipt {
   final Patient? patient;
   final String? bookingPaymentStatus;
 
-  const OtPaymentReceipt({required this.payment, required this.totalPaid, required this.requiredTotal, this.patient, this.bookingPaymentStatus});
+  const OtPaymentReceipt({
+    required this.payment,
+    required this.totalPaid,
+    required this.requiredTotal,
+    this.patient,
+    this.bookingPaymentStatus,
+  });
 
   factory OtPaymentReceipt.fromJson(Map<String, dynamic> j) {
     final paymentJson = j['payment'] as Map<String, dynamic>;
@@ -226,7 +278,9 @@ class OtPaymentReceipt {
       payment: OtPaymentEntry.fromJson(paymentJson),
       totalPaid: numOrStringToDouble(j['total_paid']) ?? 0,
       requiredTotal: numOrStringToDouble(j['required_total']) ?? 0,
-      patient: bookingJson?['patient'] != null ? Patient.fromJson(bookingJson!['patient'] as Map<String, dynamic>) : null,
+      patient: bookingJson?['patient'] != null
+          ? Patient.fromJson(bookingJson!['patient'] as Map<String, dynamic>)
+          : null,
       bookingPaymentStatus: bookingJson?['payment_status'] as String?,
     );
   }

@@ -1,3 +1,5 @@
+import '../utils/json_parse.dart';
+
 class MasterDosage {
   final int id;
   final String dosage;
@@ -6,9 +8,9 @@ class MasterDosage {
   const MasterDosage({required this.id, required this.dosage, required this.isActive});
 
   factory MasterDosage.fromJson(Map<String, dynamic> json) => MasterDosage(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         dosage: json['dosage'] as String,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -20,9 +22,9 @@ class MasterMedicineType {
   const MasterMedicineType({required this.id, required this.name, required this.isActive});
 
   factory MasterMedicineType.fromJson(Map<String, dynamic> json) => MasterMedicineType(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         name: json['name'] as String,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -34,9 +36,9 @@ class MasterMedicineCategory {
   const MasterMedicineCategory({required this.id, required this.name, required this.isActive});
 
   factory MasterMedicineCategory.fromJson(Map<String, dynamic> json) => MasterMedicineCategory(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         name: json['name'] as String,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -48,9 +50,9 @@ class MasterMedicineRoute {
   const MasterMedicineRoute({required this.id, required this.name, required this.isActive});
 
   factory MasterMedicineRoute.fromJson(Map<String, dynamic> json) => MasterMedicineRoute(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         name: json['name'] as String,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -84,18 +86,18 @@ class MasterMedicine {
   });
 
   factory MasterMedicine.fromJson(Map<String, dynamic> json) => MasterMedicine(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         name: json['name'] as String,
-        typeId: (json['type_id'] as num).toInt(),
+        typeId: jsonInt(json['type_id']),
         typeName: json['type_name'] as String?,
-        dosageId: (json['dosage_id'] as num).toInt(),
+        dosageId: jsonInt(json['dosage_id']),
         dosageName: json['dosage_name'] as String?,
         duration: json['duration'] as String?,
         qty: json['qty'] as String?,
         composition: json['composition'] as String?,
         company: json['company'] as String?,
-        price: json['price'] != null ? (json['price'] as num).toDouble() : null,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        price: jsonDoubleOrNull(json['price']),
+        isActive: jsonBool(json['is_active']),
       );
 }
 

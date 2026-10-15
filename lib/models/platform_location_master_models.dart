@@ -1,3 +1,5 @@
+import '../utils/json_parse.dart';
+
 class MasterCountry {
   final int id;
   final String name;
@@ -14,11 +16,11 @@ class MasterCountry {
   });
 
   factory MasterCountry.fromJson(Map<String, dynamic> json) => MasterCountry(
-        id: json['id'] as int,
+        id: jsonInt(json['id']),
         name: json['name'] as String,
         defaultTimezone: (json['default_timezone'] ?? '') as String,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
-        statesCount: (json['states_count'] as num?)?.toInt() ?? 0,
+        isActive: jsonBool(json['is_active']),
+        statesCount: jsonInt(json['states_count']),
       );
 }
 
@@ -38,11 +40,11 @@ class MasterState {
   });
 
   factory MasterState.fromJson(Map<String, dynamic> json) => MasterState(
-        id: json['id'] as int,
-        countryId: (json['country_id'] as num).toInt(),
+        id: jsonInt(json['id']),
+        countryId: jsonInt(json['country_id']),
         name: json['name'] as String,
         countryName: json['country_name'] as String?,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -62,11 +64,11 @@ class MasterDistrict {
   });
 
   factory MasterDistrict.fromJson(Map<String, dynamic> json) => MasterDistrict(
-        id: json['id'] as int,
-        stateId: (json['state_id'] as num).toInt(),
+        id: jsonInt(json['id']),
+        stateId: jsonInt(json['state_id']),
         name: json['name'] as String,
         stateName: json['state_name'] as String?,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 
@@ -90,13 +92,13 @@ class MasterCity {
   });
 
   factory MasterCity.fromJson(Map<String, dynamic> json) => MasterCity(
-        id: json['id'] as int,
-        stateId: (json['state_id'] as num).toInt(),
-        districtId: json['district_id'] != null ? (json['district_id'] as num).toInt() : null,
+        id: jsonInt(json['id']),
+        stateId: jsonInt(json['state_id']),
+        districtId: jsonIntOrNull(json['district_id']),
         name: json['name'] as String,
         stateName: json['state_name'] as String?,
         districtName: json['district_name'] as String?,
-        isActive: json['is_active'] == true || json['is_active'] == 1,
+        isActive: jsonBool(json['is_active']),
       );
 }
 

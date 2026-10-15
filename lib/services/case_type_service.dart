@@ -15,9 +15,18 @@ class CaseTypeItem {
   });
 
   factory CaseTypeItem.fromJson(Map<String, dynamic> j) => CaseTypeItem(
-        id: j['id'] as int,
-        caseType: j['case_type'] as String? ?? '',
-        caseFee: (j['case_fee'] as num?)?.toDouble() ?? 0.0,
+        id: switch (j['id']) {
+          int v => v,
+          num n => n.toInt(),
+          String s => int.tryParse(s) ?? 0,
+          _ => 0,
+        },
+        caseType: j['case_type']?.toString() ?? '',
+        caseFee: switch (j['case_fee']) {
+          num n => n.toDouble(),
+          String s => double.tryParse(s) ?? 0.0,
+          _ => 0.0,
+        },
       );
 }
 

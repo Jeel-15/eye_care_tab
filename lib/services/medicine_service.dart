@@ -106,9 +106,10 @@ class MedicineService with AuthenticatedService {
 
   // ── Medicines ─────────────────────────────────────────────────────────────────
 
-  Future<MedListResult> fetchMedicines({String search = '', int page = 1}) async {
+  Future<MedListResult> fetchMedicines({String search = '', int page = 1, bool ward = false}) async {
     final params = <String, String>{'page': '$page'};
     if (search.isNotEmpty) params['search'] = search;
+    if (ward) params['scope'] = 'ward';
     final j = await _get('medicines', params: params);
     return MedListResult.fromJson(j);
   }
@@ -138,6 +139,7 @@ class MedicineService with AuthenticatedService {
     final client = http.Client();
     try {
       final streamedRes = await client.send(req).timeout(const Duration(seconds: 30));
+      syncPermissionsVersion(streamedRes.headers, statusCode: streamedRes.statusCode);
       if (streamedRes.statusCode != 200) {
         throw Exception('Download failed (${streamedRes.statusCode})');
       }

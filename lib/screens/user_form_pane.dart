@@ -4,11 +4,15 @@ import 'package:flutter/services.dart';
 import 'package:image_picker/image_picker.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
+import '../models/user_permission_policy.dart';
 import '../services/base_service.dart' show StaleRecordException;
+import '../services/masters_service.dart';
 import '../services/permission_service.dart';
 import '../services/user_service.dart';
 import '../utils/phone_rules.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/form_kit.dart';
+import '../widgets/search_picker_dialog.dart';
 import '../widgets/skeleton.dart';
 
 enum UserFormMode { add, edit }
@@ -45,7 +49,6 @@ class _UserFormPaneState extends State<UserFormPane> {
   final _expYrsCtrl = TextEditingController();
 
   String _status = 'active';
-  String _doctorType = 'primary';
   bool _focPerm = false;
   bool _showPassword = false;
   bool _showConfirm = false;
@@ -55,6 +58,10 @@ class _UserFormPaneState extends State<UserFormPane> {
   List<UserRole> _roles = [];
   bool _loadingForm = true;
   String? _formError;
+
+  // Doctor-only — "Connected OT Assistant" (web pull 2026-10-12).
+  List<OtAssistantOption> _otAssistants = [];
+  int? _defaultOtAssistantId;
 
   File? _signatureFile;
   File? _profilePhotoFile;
@@ -92,7 +99,19 @@ class _UserFormPaneState extends State<UserFormPane> {
       final data = await UserService.instance.fetchFormData();
       if (!mounted) return;
       setState(() {
-        _roles = data.roles;
+        final action = _isEdit ? 'edit' : 'add';
+        _roles = data.roles.where((role) {
+          if (role.isSuper) return false;
+          final category = UserPermissionPolicy.categoryFor(
+            userCategory: role.userCategory,
+            roleSlug: role.slug,
+            roleName: role.name,
+          );
+          return PermissionService.instance.can(
+            UserPermissionPolicy.permissionKey(category, action),
+          );
+        }).toList();
+        _otAssistants = data.otAssistants;
         _loadingForm = false;
       });
       if (_isEdit) _fillFromEdit();
@@ -115,12 +134,18 @@ class _UserFormPaneState extends State<UserFormPane> {
     if (u.role != null) {
       _selectedRole = _roles.firstWhere((r) => r.id == u.role!.id, orElse: () => u.role!);
     }
-    _doctorType = u.doctorType ?? 'primary';
     _prefixCtrl.text = u.doctorPrefix ?? '';
     _regNoCtrl.text = u.registrationNo ?? '';
     _expYrsCtrl.text = u.experienceYears?.toString() ?? '';
     _existingSignatureUrl = u.signatureUrl;
     _existingPhotoUrl = u.profilePhotoUrl;
+    // Only pre-select if still present in the active list (e.g. not since
+    // deactivated/role-changed) — avoids DropdownButtonFormField's "exactly
+    // one matching item" assertion.
+    if (u.defaultOtAssistantId != null &&
+        _otAssistants.any((a) => a.id == u.defaultOtAssistantId)) {
+      _defaultOtAssistantId = u.defaultOtAssistantId;
+    }
 
     // Admin viewers get the actual current password pre-filled, matching web.
     if (_isAdmin && (u.originalPassword?.isNotEmpty ?? false)) {
@@ -170,10 +195,16 @@ class _UserFormPaneState extends State<UserFormPane> {
           password: _passwordCtrl.text.isNotEmpty ? _passwordCtrl.text : null,
           passwordConfirmation: _passwordCtrl.text.isNotEmpty ? _passwordConfCtrl.text : null,
           status: _status,
-          doctorType: _isDoctorRole ? _doctorType : null,
+          // Web removed the Doctor Type picker from this form entirely
+          // (`_user_modal.blade.php` — the field is HTML-commented out) and
+          // its own save always sends null for it now, so this app matches
+          // that exactly rather than keeping a picker web no longer has.
+          // See mobile's user_form_screen.dart for the same comment.
+          doctorType: null,
           doctorPrefix: _isDoctorRole && _prefixCtrl.text.trim().isNotEmpty ? _prefixCtrl.text.trim().toUpperCase() : null,
           registrationNo: _isDoctorRole && _regNoCtrl.text.trim().isNotEmpty ? _regNoCtrl.text.trim() : null,
           experienceYears: _isDoctorRole && _expYrsCtrl.text.isNotEmpty ? int.tryParse(_expYrsCtrl.text) : null,
+          defaultOtAssistantId: _isDoctorRole ? _defaultOtAssistantId : null,
           focPermission: _isDoctorRole ? _focPerm : false,
           signature: _signatureFile,
           clearSignature: _clearSignature,
@@ -190,15 +221,25 @@ class _UserFormPaneState extends State<UserFormPane> {
           password: _passwordCtrl.text,
           passwordConfirmation: _passwordConfCtrl.text,
           status: _status,
-          doctorType: _isDoctorRole ? _doctorType : null,
+          // See the matching comment on `updateUser` above.
+          doctorType: null,
           doctorPrefix: _isDoctorRole && _prefixCtrl.text.trim().isNotEmpty ? _prefixCtrl.text.trim().toUpperCase() : null,
           registrationNo: _isDoctorRole && _regNoCtrl.text.trim().isNotEmpty ? _regNoCtrl.text.trim() : null,
           experienceYears: _isDoctorRole && _expYrsCtrl.text.isNotEmpty ? int.tryParse(_expYrsCtrl.text) : null,
+          defaultOtAssistantId: _isDoctorRole ? _defaultOtAssistantId : null,
           focPermission: _isDoctorRole ? _focPerm : false,
           signature: _signatureFile,
           profilePhoto: _profilePhotoFile,
         );
       }
+      // A doctor's name/status can change here — MastersService's in-memory
+      // doctor dropdown (Patient Add/Edit/Check-in forms) only refetches
+      // when empty, so without this it kept showing the pre-edit doctor
+      // list for the rest of the app session (fixed only by a full app
+      // restart, which resets that cache). See CacheService/MastersService
+      // for the same pattern already handled by the Case Type/Location/
+      // Referrer master screens.
+      MastersService.instance.clearCache();
       if (!mounted) return;
       setState(() => _saving = false);
       widget.onSaved(saved);
@@ -214,9 +255,14 @@ class _UserFormPaneState extends State<UserFormPane> {
   }
 
   Future<void> _pickRole() async {
-    final picked = await showDialog<UserRole>(
-      context: context,
-      builder: (ctx) => _RolePickerDialog(roles: _roles, selected: _selectedRole),
+    final picked = await showSearchPickerDialog<UserRole>(
+      context,
+      title: 'Select Role',
+      icon: Icons.badge_outlined,
+      searchHint: 'Search roles...',
+      items: _roles,
+      label: (r) => r.name,
+      itemBuilder: (ctx, role, select) => _roleTile(role, _selectedRole?.id == role.id, select),
     );
     if (picked != null) {
       setState(() {
@@ -348,11 +394,6 @@ class _UserFormPaneState extends State<UserFormPane> {
           if (_isDoctorRole) ...[
             const SizedBox(height: 16),
             _sectionCard(icon: Icons.medical_services_rounded, label: 'DOCTOR DETAILS', badgeText: 'Auto-detected from role', children: [
-              _field('Doctor Type', Row(children: [
-                Expanded(child: _doctorTypeOption('Primary', 'Ophthalmologist', _doctorType == 'primary', () => setState(() => _doctorType = 'primary'))),
-                const SizedBox(width: 10),
-                Expanded(child: _doctorTypeOption('Secondary', 'Optometrist', _doctorType == 'secondary', () => setState(() => _doctorType = 'secondary'))),
-              ])),
               _row2(
                 _field('Prefix (2–5 letters)', _styledField(controller: _prefixCtrl, hint: 'e.g. DR', maxLength: 5, inputFormatters: [FilteringTextInputFormatter.allow(RegExp(r'[A-Za-z]')), _UpperCaseFormatter()], validator: (v) => (v != null && v.isNotEmpty && v.length < 2) ? 'Min 2 letters' : null)),
                 _field('Exp. Years', _styledField(controller: _expYrsCtrl, hint: '0–60', keyboardType: TextInputType.number, maxLength: 2, inputFormatters: [FilteringTextInputFormatter.digitsOnly], validator: (v) {
@@ -363,6 +404,20 @@ class _UserFormPaneState extends State<UserFormPane> {
                 })),
               ),
               _field('Registration Number', _styledField(controller: _regNoCtrl, hint: 'Medical council registration no.'), fullWidth: true),
+              _field(
+                'Connected OT Assistant',
+                DropdownButtonFormField<int?>(
+                  initialValue: _defaultOtAssistantId,
+                  isExpanded: true,
+                  decoration: appFieldDecoration(null, hint: 'None'),
+                  items: [
+                    const DropdownMenuItem(value: null, child: Text('None')),
+                    ..._otAssistants.map((a) => DropdownMenuItem(value: a.id, child: Text(a.name, overflow: TextOverflow.ellipsis))),
+                  ],
+                  onChanged: (v) => setState(() => _defaultOtAssistantId = v),
+                ),
+                fullWidth: true,
+              ),
               // FOC Permission toggle disabled at client's request — see
               // foc_screen.dart. _focPerm keeps whatever value the user
               // already had and is still sent on save unchanged; it's just
@@ -408,13 +463,7 @@ class _UserFormPaneState extends State<UserFormPane> {
           const SizedBox(height: 20),
           SizedBox(
             width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _saving ? null : _save,
-              style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white, padding: const EdgeInsets.symmetric(vertical: 16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)), elevation: 0),
-              child: _saving
-                  ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                  : Text(_isEdit ? 'Update User' : 'Create User', style: const TextStyle(fontWeight: FontWeight.w900, fontSize: 15, letterSpacing: 0.5)),
-            ),
+            child: AppPrimaryButton(label: _isEdit ? 'Update User' : 'Create User', loading: _saving, onPressed: _save),
           ),
         ],
       ),
@@ -441,19 +490,11 @@ class _UserFormPaneState extends State<UserFormPane> {
     );
   }
 
-  InputDecoration _inputDeco(String hint, {Widget? suffix}) => InputDecoration(
-        hintText: hint,
-        hintStyle: TextStyle(fontSize: 13, color: AppColors.textSecondary.withValues(alpha: 0.6)),
-        filled: true,
-        fillColor: AppColors.primaryA05,
-        contentPadding: const EdgeInsets.symmetric(vertical: 12, horizontal: 14),
-        border: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.primaryA12)),
-        enabledBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.primaryA12)),
-        focusedBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.primaryA50, width: 1.5)),
-        errorBorder: OutlineInputBorder(borderRadius: BorderRadius.circular(AppRadius.md), borderSide: BorderSide(color: AppColors.red)),
-        counterText: '',
-        suffixIcon: suffix,
-      );
+  // Same field chrome as every other tablet form now (PatientFormScreen,
+  // master dialogs, ...) via form_kit.dart — label stays external here
+  // (this file's `_field()` wrapper + sectioned cards already read well),
+  // only the border/fill/radius/focus-color language was different before.
+  InputDecoration _inputDeco(String hint, {Widget? suffix}) => appFieldDecoration(null, hint: hint, suffix: suffix).copyWith(counterText: '');
 
   Widget _styledField({required TextEditingController controller, String? hint, TextInputType? keyboardType, int? maxLength, List<TextInputFormatter>? inputFormatters, String? Function(String?)? validator, TextCapitalization textCapitalization = TextCapitalization.none}) {
     return TextFormField(
@@ -510,23 +551,6 @@ class _UserFormPaneState extends State<UserFormPane> {
           Icon(selected ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded, size: 15, color: selected ? color : AppColors.textSecondary),
           const SizedBox(width: 6),
           Text(label, style: TextStyle(fontWeight: FontWeight.w700, fontSize: 13, color: selected ? color : AppColors.textSecondary)),
-        ]),
-      ),
-    );
-  }
-
-  Widget _doctorTypeOption(String label, String subtitle, bool selected, VoidCallback onTap) {
-    return GestureDetector(
-      onTap: onTap,
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 10),
-        decoration: BoxDecoration(color: selected ? AppColors.primaryA07 : Colors.white, borderRadius: BorderRadius.circular(AppRadius.md), border: Border.all(color: selected ? AppColors.primaryA50 : AppColors.primaryA12, width: selected ? 1.8 : 1)),
-        child: Column(children: [
-          Icon(selected ? Icons.radio_button_checked_rounded : Icons.radio_button_unchecked_rounded, size: 16, color: selected ? AppColors.primary : AppColors.textSecondary),
-          const SizedBox(height: 4),
-          Text(label, style: TextStyle(fontWeight: FontWeight.w800, fontSize: 12, color: selected ? AppColors.primary : AppColors.textSecondary)),
-          Text(subtitle, style: TextStyle(fontSize: 10, color: selected ? AppColors.primaryA60 : AppColors.textSecondary)),
         ]),
       ),
     );
@@ -595,114 +619,35 @@ class _UserFormPaneState extends State<UserFormPane> {
   }
 }
 
-// ── Role picker dialog ────────────────────────────────────────────────────
+// ── Role picker row ───────────────────────────────────────────────────────
 
-class _RolePickerDialog extends StatefulWidget {
-  final List<UserRole> roles;
-  final UserRole? selected;
-
-  const _RolePickerDialog({required this.roles, this.selected});
-
-  @override
-  State<_RolePickerDialog> createState() => _RolePickerDialogState();
+Widget _roleTile(UserRole role, bool isSelected, VoidCallback onTap) {
+  final color = role.parsedColor;
+  return ListTile(
+    onTap: onTap,
+    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
+    tileColor: isSelected ? AppColors.primaryA06 : null,
+    leading: Container(
+      width: 36,
+      height: 36,
+      decoration: BoxDecoration(color: color.withValues(alpha: 0.12), shape: BoxShape.circle, border: Border.all(color: color.withValues(alpha: 0.30))),
+      child: Center(child: Text(role.name.isNotEmpty ? role.name[0].toUpperCase() : '?', style: TextStyle(fontWeight: FontWeight.w900, color: color, fontSize: 14))),
+    ),
+    title: Text(role.name, style: TextStyle(fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600, color: isSelected ? AppColors.primary : AppColors.textPrimary, fontSize: 14)),
+    subtitle: Row(children: [
+      if (role.isDoctorRole) _roleBadge('Doctor', AppColors.blue, AppColors.blueA12),
+      if (role.isSuper) _roleBadge('Super Admin', AppColors.orange, AppColors.orangeA12),
+    ]),
+    trailing: isSelected ? Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20) : null,
+  );
 }
 
-class _RolePickerDialogState extends State<_RolePickerDialog> {
-  final _searchCtrl = TextEditingController();
-  List<UserRole> _filtered = [];
-
-  @override
-  void initState() {
-    super.initState();
-    _filtered = widget.roles;
-  }
-
-  @override
-  void dispose() {
-    _searchCtrl.dispose();
-    super.dispose();
-  }
-
-  void _onSearch(String v) {
-    setState(() {
-      _filtered = v.isEmpty ? widget.roles : widget.roles.where((r) => r.name.toLowerCase().contains(v.toLowerCase())).toList();
-    });
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.xl)),
-      child: SizedBox(
-        width: 420,
-        height: 520,
-        child: Column(children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
-            child: Row(children: [
-              Text('Select Role', style: TextStyle(fontWeight: FontWeight.w900, fontSize: 17, color: AppColors.primary)),
-              const Spacer(),
-              IconButton(icon: Icon(Icons.close_rounded, color: AppColors.textSecondary), onPressed: () => Navigator.pop(context)),
-            ]),
-          ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: TextField(
-              controller: _searchCtrl,
-              onChanged: _onSearch,
-              autofocus: true,
-              decoration: InputDecoration(
-                hintText: 'Search roles...',
-                hintStyle: TextStyle(color: AppColors.textSecondary, fontSize: 13),
-                prefixIcon: Icon(Icons.search_rounded, size: 18, color: AppColors.textSecondary),
-                filled: true,
-                fillColor: AppColors.primaryA05,
-                contentPadding: const EdgeInsets.symmetric(vertical: 12),
-                border: OutlineInputBorder(borderRadius: BorderRadius.circular(14), borderSide: BorderSide.none),
-              ),
-            ),
-          ),
-          const SizedBox(height: 8),
-          Expanded(
-            child: ListView.builder(
-              padding: const EdgeInsets.fromLTRB(12, 4, 12, 16),
-              itemCount: _filtered.length,
-              itemBuilder: (_, i) {
-                final role = _filtered[i];
-                final color = role.parsedColor;
-                final isSelected = widget.selected?.id == role.id;
-                return ListTile(
-                  onTap: () => Navigator.pop(context, role),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.md)),
-                  tileColor: isSelected ? AppColors.primaryA06 : null,
-                  leading: Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(color: color.withValues(alpha: 0.12), shape: BoxShape.circle, border: Border.all(color: color.withValues(alpha: 0.30))),
-                    child: Center(child: Text(role.name.isNotEmpty ? role.name[0].toUpperCase() : '?', style: TextStyle(fontWeight: FontWeight.w900, color: color, fontSize: 14))),
-                  ),
-                  title: Text(role.name, style: TextStyle(fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600, color: isSelected ? AppColors.primary : AppColors.textPrimary, fontSize: 14)),
-                  subtitle: Row(children: [
-                    if (role.isDoctorRole) _roleBadge('Doctor', AppColors.blue, AppColors.blueA12),
-                    if (role.isSuper) _roleBadge('Super Admin', AppColors.orange, AppColors.orangeA12),
-                  ]),
-                  trailing: isSelected ? Icon(Icons.check_circle_rounded, color: AppColors.primary, size: 20) : null,
-                );
-              },
-            ),
-          ),
-        ]),
-      ),
+Widget _roleBadge(String text, Color textColor, Color bgColor) => Container(
+      margin: const EdgeInsets.only(right: 4, top: 2),
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(AppRadius.xl)),
+      child: Text(text, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: textColor)),
     );
-  }
-
-  Widget _roleBadge(String text, Color textColor, Color bgColor) => Container(
-        margin: const EdgeInsets.only(right: 4, top: 2),
-        padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-        decoration: BoxDecoration(color: bgColor, borderRadius: BorderRadius.circular(AppRadius.xl)),
-        child: Text(text, style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, color: textColor)),
-      );
-}
 
 class _UpperCaseFormatter extends TextInputFormatter {
   @override

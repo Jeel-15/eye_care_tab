@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
 import '../models/platform_location_master_models.dart';
+import '../utils/json_parse.dart';
 import 'platform_auth_service.dart';
 
 class PlatformLocationMasterService with PlatformAuthenticatedService {
@@ -39,8 +40,8 @@ class PlatformLocationMasterService with PlatformAuthenticatedService {
       final d = body['data'];
       return (
         items:    (d['items'] as List).map((e) => fromJson(e as Map<String, dynamic>)).toList(),
-        total:    (d['total'] as num).toInt(),
-        lastPage: (d['last_page'] as num).toInt(),
+        total:    jsonInt(d['total']),
+        lastPage: jsonInt(d['last_page'], fallback: 1),
       );
     } catch (_) { return null; }
   }

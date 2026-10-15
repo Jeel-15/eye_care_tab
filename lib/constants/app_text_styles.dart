@@ -19,4 +19,12 @@ abstract final class AppTextStyles {
   static const TextStyle statNumber    = TextStyle(fontSize: 22, fontWeight: FontWeight.w800,  color: AppColors.textPrimary);
   static const TextStyle cardTitle     = TextStyle(fontSize: 14, fontWeight: FontWeight.w600,  color: AppColors.textPrimary);
   static const TextStyle cardSubtitle  = TextStyle(fontSize: 12, fontWeight: FontWeight.w400,  color: AppColors.textSecondary);
+
+  // Tablet data tables. Read at arm's length: the name is the scan anchor,
+  // every other value is the same dark colour so a row reads in one glance,
+  // and the header stays quieter than the data.
+  static const TextStyle tableHeader  = TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppColors.textSecondary, height: 1.2);
+  static const TextStyle tablePrimary = TextStyle(fontSize: 15, fontWeight: FontWeight.w700, color: AppColors.textPrimary, height: 1.25);
+  static const TextStyle tableValue   = TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textPrimary, height: 1.25);
+  static const TextStyle tableMeta    = TextStyle(fontSize: 13, fontWeight: FontWeight.w500, color: AppColors.textSecondary, height: 1.2);
 }

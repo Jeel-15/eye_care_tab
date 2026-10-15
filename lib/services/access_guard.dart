@@ -34,15 +34,21 @@ class AccessGuard {
 
   /// The login token itself is no longer valid (401). Goes straight to
   /// login — a "Retry" screen wouldn't help here, only logging in again does.
-  void showSessionExpired() {
+  void showSessionExpired({
+    String message = 'Session expired. Please log in again.',
+  }) {
     if (_showing) return;
     _showing = true;
     navigatorKey.currentState?.pushAndRemoveUntil(
       MaterialPageRoute(
-        builder: (_) => const LoginScreen(initialError: 'Session expired. Please log in again.'),
+        builder: (_) => LoginScreen(initialError: message),
       ),
       (route) => false,
     );
+  }
+
+  void reset() {
+    _showing = false;
   }
 
   void _retryToSplash() {

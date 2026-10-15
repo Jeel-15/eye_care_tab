@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import '../constants/app_breakpoints.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
@@ -12,6 +13,7 @@ import '../widgets/app_empty_state.dart';
 import '../widgets/skeleton.dart';
 import '../utils/currency_format.dart';
 import '../utils/refreshable.dart';
+import '../utils/app_date_picker.dart';
 
 /// Tablet OPD Reports module — Pattern D (persistent filter panel + real
 /// DataTable). Mirrors web's redesigned landing page (a "Total Collection"
@@ -180,7 +182,7 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
 
   Future<void> _pickDateRange() async {
     final now = DateTime.now();
-    final range = await showDateRangePicker(
+    final range = await showAppDateRangePicker(
       context: context,
       firstDate: DateTime(2024),
       lastDate: now.add(const Duration(days: 1)),
@@ -231,7 +233,8 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
 
   @override
   Widget build(BuildContext context) {
-    if (!PermissionService.instance.can(Perm.reportsView)) {
+    if (!PermissionService.instance.can(Perm.reportsView) &&
+        !PermissionService.instance.can(Perm.opdReportsView)) {
       return Center(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
           Icon(Icons.lock_outline_rounded, size: 56, color: AppColors.primaryA25),
@@ -248,7 +251,7 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
   // ── Landing UI ───────────────────────────────────────────────────────
 
   Widget _buildLanding() {
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       onRefresh: _loadCounts,
       color: AppColors.primary,
       child: ListView(
@@ -259,7 +262,9 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
             children: [
               Text('Patient Reports', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppColors.textPrimary)),
               const Spacer(),
-              if (PermissionService.instance.can(Perm.reportsExport)) ...[
+              if (PermissionService.instance.canAny(
+                const [Perm.reportsExport, Perm.opdReportsExport],
+              )) ...[
                 IconButton(tooltip: 'Export Excel', onPressed: _exportingLanding ? null : () => _exportLanding('excel'), icon: Icon(Icons.table_chart_outlined, size: 20, color: AppColors.primary)),
                 IconButton(tooltip: 'Export PDF', onPressed: _exportingLanding ? null : () => _exportLanding('pdf'), icon: Icon(Icons.picture_as_pdf_outlined, size: 20, color: AppColors.primary)),
               ],
@@ -432,6 +437,18 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
     );
   }
 
+  Widget _caseChip(String label) {
+    final text = label.trim();
+    if (text.isEmpty || text == '-') {
+      return const Text('-', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w600, color: AppColors.textSecondary));
+    }
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(color: AppColors.primary.withValues(alpha: 0.08), borderRadius: BorderRadius.circular(AppRadius.full)),
+      child: Text(text, style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.w700, color: AppColors.primary)),
+    );
+  }
+
   Widget _buildTableHeader(ReportChannelResult? result) {
     final p = PermissionService.instance;
     return Padding(
@@ -447,7 +464,7 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
             Text('Page ${result.meta.currentPage} / ${result.meta.lastPage}', style: TextStyle(fontSize: 12, color: AppColors.textSecondary, fontWeight: FontWeight.w600)),
           ],
           const Spacer(),
-          if (p.can(Perm.reportsExport)) ...[
+          if (p.canAny(const [Perm.reportsExport, Perm.opdReportsExport])) ...[
             IconButton(tooltip: 'Export Excel', onPressed: _exportingChannel ? null : () => _exportChannel('excel'), icon: Icon(Icons.table_chart_outlined, size: 20, color: AppColors.primary)),
             IconButton(tooltip: 'Export PDF', onPressed: _exportingChannel ? null : () => _exportChannel('pdf'), icon: Icon(Icons.picture_as_pdf_outlined, size: 20, color: AppColors.primary)),
           ],
@@ -503,6 +520,15 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
             child: ConstrainedBox(
               constraints: BoxConstraints(minWidth: constraints.maxWidth),
               child: DataTable(
+                headingRowColor: WidgetStateProperty.all(AppColors.primary),
+                headingTextStyle: const TextStyle(color: Colors.white, fontSize: 13, fontWeight: FontWeight.w700),
+                dataTextStyle: const TextStyle(color: AppColors.textPrimary, fontSize: 14, fontWeight: FontWeight.w600),
+                headingRowHeight: 44,
+                dataRowMinHeight: 48,
+                dataRowMaxHeight: 56,
+                columnSpacing: 22,
+                horizontalMargin: 16,
+                dividerThickness: 0,
                 columns: [
                   const DataColumn(label: Text('Code')),
                   const DataColumn(label: Text('Name')),
@@ -515,22 +541,26 @@ class _ReportsScreenState extends State<ReportsScreen> implements Refreshable {
                   const DataColumn(label: Text('City')),
                   const DataColumn(label: Text('Fee')),
                 ],
-                rows: result.patients.map((p) {
-                  return DataRow(cells: [
-                    DataCell(Text(p.patientCode)),
-                    DataCell(Text(p.fullName)),
-                    DataCell(Text(p.appointmentDate)),
-                    DataCell(Text(p.contactNo ?? '-')),
-                    DataCell(Text(p.age != null ? '${p.age}' : '-')),
-                    DataCell(Text(p.doctorName ?? '-')),
-                    DataCell(Text(p.caseTypeLabel)),
-                    DataCell(Text(p.receptionistName ?? '-')),
-                    DataCell(Text(p.locationCity ?? '-')),
-                    // Case fees shown for every row per web's channel.blade.php
-                    // (unconditional money() column) — not gated on walk-in type.
-                    DataCell(Text('${currentCurrencySymbol()}${p.caseFee.toStringAsFixed(2)}')),
-                  ]);
-                }).toList(),
+                rows: [
+                  for (var i = 0; i < result.patients.length; i++)
+                    DataRow(
+                      color: WidgetStateProperty.all(i.isEven ? Colors.white : const Color(0xFFF3F8FC)),
+                      cells: [
+                        DataCell(Text(result.patients[i].patientCode, style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppColors.primary))),
+                        DataCell(Text(result.patients[i].fullName, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppColors.textPrimary))),
+                        DataCell(Text(result.patients[i].appointmentDate)),
+                        DataCell(Text(result.patients[i].contactNo ?? '-')),
+                        DataCell(Text(result.patients[i].age != null ? '${result.patients[i].age}' : '-')),
+                        DataCell(Text(result.patients[i].doctorName ?? '-')),
+                        DataCell(_caseChip(result.patients[i].caseTypeLabel)),
+                        DataCell(Text(result.patients[i].receptionistName ?? '-')),
+                        DataCell(Text(result.patients[i].locationCity ?? '-')),
+                        // Case fees shown for every row per web's channel.blade.php
+                        // (unconditional money() column) — not gated on walk-in type.
+                        DataCell(Text('${currentCurrencySymbol()}${result.patients[i].caseFee.toStringAsFixed(2)}', style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: Color(0xFF0D9488)))),
+                      ],
+                    ),
+                ],
               ),
             ),
           );

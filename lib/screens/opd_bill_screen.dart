@@ -1,3 +1,4 @@
+import '../utils/date_format.dart';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
@@ -9,6 +10,7 @@ import '../constants/app_radius.dart';
 import '../models/auth_models.dart';
 import '../models/patient_models.dart';
 import '../services/auth_service.dart';
+import '../services/settings_service.dart';
 import '../widgets/app_animations.dart';
 
 /// Tablet OPD Bill / receipt — full-screen route (pushed from Patients'
@@ -36,7 +38,15 @@ class _OpdBillScreenState extends State<OpdBillScreen> {
   Future<void> _share() async {
     setState(() => _sharing = true);
     try {
-      final bytes = await _buildPdf();
+      // Web's Settings → Print "Letter Pad" toggle — see _buildPdf()'s doc
+      // comment. Best-effort: a failed fetch just falls back to the
+      // existing branded header.
+      bool letterPadAvailable = false;
+      try {
+        final settings = await SettingsService.instance.fetchSettings();
+        letterPadAvailable = settings.letterPadAvailable;
+      } catch (_) {}
+      final bytes = await _buildPdf(letterPadAvailable: letterPadAvailable);
       await Printing.sharePdf(bytes: bytes, filename: 'OPD_Bill_${widget.patient.patientCode}.pdf');
     } catch (e) {
       if (mounted) showAppSnackBar(context, 'Failed to generate bill: $e', isError: true);
@@ -60,7 +70,7 @@ class _OpdBillScreenState extends State<OpdBillScreen> {
     return null;
   }
 
-  Future<Uint8List> _buildPdf() async {
+  Future<Uint8List> _buildPdf({bool letterPadAvailable = false}) async {
     final doc = pw.Document();
     final p = widget.patient;
     final fee = p.caseFee ?? 0.0;
@@ -75,14 +85,21 @@ class _OpdBillScreenState extends State<OpdBillScreen> {
       build: (ctx) => pw.Column(
         crossAxisAlignment: pw.CrossAxisAlignment.start,
         children: [
+          // Web's Settings → Print "Letter Pad" toggle (hospital_setting
+          // 'letter_pad') — pdfs/opd-bill.blade.php drops the hospital
+          // name/logo block entirely when 'available' (physical letterhead
+          // handles the branding), going straight to the "OPD BILL" title.
+          // See client report 2026-10-14.
           pw.Center(
             child: pw.Column(crossAxisAlignment: pw.CrossAxisAlignment.center, children: [
-              if (logo != null) ...[
-                pw.Image(logo, height: 36, fit: pw.BoxFit.contain),
-                pw.SizedBox(height: 6),
+              if (!letterPadAvailable) ...[
+                if (logo != null) ...[
+                  pw.Image(logo, height: 36, fit: pw.BoxFit.contain),
+                  pw.SizedBox(height: 6),
+                ],
+                pw.Text(widget.hospital.name, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColor.fromHex('#1B4F72'))),
+                pw.SizedBox(height: 4),
               ],
-              pw.Text(widget.hospital.name, style: pw.TextStyle(fontSize: 16, fontWeight: pw.FontWeight.bold, color: PdfColor.fromHex('#1B4F72'))),
-              pw.SizedBox(height: 4),
               pw.Container(
                 padding: const pw.EdgeInsets.symmetric(horizontal: 10, vertical: 3),
                 decoration: pw.BoxDecoration(border: pw.Border.all(color: PdfColor.fromHex('#1B4F72'), width: 0.5)),
@@ -372,7 +389,8 @@ class _OpdBillScreenState extends State<OpdBillScreen> {
     return '${dt.day} ${m[dt.month - 1]} ${dt.year}';
   }
 
-  String _fmtDateTime(DateTime dt) {
+  String _fmtDateTime(DateTime utc) {
+    final dt = toHospitalTime(utc);
     const m = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     final h = dt.hour;
     final min = dt.minute.toString().padLeft(2, '0');

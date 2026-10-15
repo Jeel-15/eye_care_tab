@@ -1,6 +1,7 @@
 ﻿import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../config/app_config.dart';
+import '../utils/json_parse.dart';
 import 'base_service.dart';
 
 class ReferrerItem {
@@ -11,7 +12,7 @@ class ReferrerItem {
   const ReferrerItem({required this.id, required this.name, this.contact});
 
   factory ReferrerItem.fromJson(Map<String, dynamic> j) => ReferrerItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '',
         contact: j['contact'] as String?,
       );
@@ -26,8 +27,12 @@ class ReferrerService with AuthenticatedService {
   Map<String, dynamic> _parse(http.Response res) => parseApiResponse(res);
 
   Future<List<ReferrerItem>> fetchAll() async {
+    // Open dropdown endpoint (auth only) — used by exam screens.
+    // Do NOT use referrers-crud here: that requires referrer_view and blocks
+    // doctors who only have exam_primary/exam_secondary (web embeds referrers
+    // inside the exam page under exam permission).
     final res = await http
-        .get(Uri.parse('$_base/masters/referrers-crud'), headers: await headers)
+        .get(Uri.parse('$_base/masters/referrers'), headers: await headers)
         .timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     return (body['data'] as List? ?? [])

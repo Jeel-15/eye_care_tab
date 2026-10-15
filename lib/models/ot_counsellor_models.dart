@@ -59,6 +59,7 @@ class OtCounsellingItem {
   final String? lensType;
   final double? estimatedPower;
   final double? lensCost;
+  final bool? lensImplantation;
   final String? packageName;
   // Surgery Record form's Section A "Package" display source — web:
   // `$counselling?->package_amount ?? $booking->package_amount`. See
@@ -74,6 +75,11 @@ class OtCounsellingItem {
   final bool bloodReportsNormal;
   final String? notes;
   final double? totalEstimate;
+  // Accountant "View" parity (web pull 2026-09-30,
+  // `_payment-view-modal.blade.php`'s "Counselled By" field) — only present
+  // when the endpoint eager-loads `counselling.counsellor`.
+  final String? counsellorName;
+  final DateTime? counselledAt;
 
   const OtCounsellingItem({
     this.diagnosis,
@@ -86,6 +92,7 @@ class OtCounsellingItem {
     this.lensType,
     this.estimatedPower,
     this.lensCost,
+    this.lensImplantation,
     this.packageName,
     this.packageAmount,
     required this.roomCategory,
@@ -98,6 +105,8 @@ class OtCounsellingItem {
     this.bloodReportsNormal = false,
     this.notes,
     this.totalEstimate,
+    this.counsellorName,
+    this.counselledAt,
   });
 
   factory OtCounsellingItem.fromJson(Map<String, dynamic> j) => OtCounsellingItem(
@@ -111,6 +120,7 @@ class OtCounsellingItem {
         lensType: j['lens_type'] as String?,
         estimatedPower: numOrStringToDouble(j['estimated_power']),
         lensCost: numOrStringToDouble(j['lens_cost']),
+        lensImplantation: j['lens_implantation'] == null ? null : _jsonBool(j['lens_implantation']),
         packageName: j['package_name'] as String?,
         packageAmount: numOrStringToDouble(j['package_amount']),
         roomCategory: j['room_category'] as String? ?? 'general',
@@ -123,6 +133,8 @@ class OtCounsellingItem {
         bloodReportsNormal: _jsonBool(j['blood_reports_normal']),
         notes: j['notes'] as String?,
         totalEstimate: numOrStringToDouble(j['total_estimate']),
+        counsellorName: (j['counsellor'] as Map<String, dynamic>?)?['name'] as String?,
+        counselledAt: j['counselled_at'] != null ? DateTime.tryParse(j['counselled_at'] as String) : null,
       );
 
   Map<String, dynamic> toJson() => {
@@ -136,13 +148,18 @@ class OtCounsellingItem {
         'lens_type': lensType,
         'estimated_power': estimatedPower,
         'lens_cost': lensCost,
+        'lens_implantation': lensImplantation,
         'package_name': packageName,
         'room_category': roomCategory,
         'ot_charges': otCharges,
         'surgeon_charges': surgeonCharges,
         'nursing_charges': nursingCharges,
         'consumables_charges': consumablesCharges,
-        'payment_mode': mediclaim ? 'mediclaim' : paymentMode,
+        // Web pull 2026-10-13: Mediclaim and Payment Mode are independent
+        // fields now (web dropped the old JS that forced payment_mode to
+        // 'mediclaim' whenever the Mediclaim radio was Yes) — send the
+        // user's actual Payment Mode choice, never override it here.
+        'payment_mode': paymentMode,
         'blood_reports_verified': bloodReportsVerified,
         'blood_reports_normal': bloodReportsNormal,
         'notes': notes,
@@ -183,6 +200,10 @@ class OtCounsellingDetail {
   // Replaces lens_options — the ot_type dropdown's source list (web pull
   // 2026-08-07). See WEB_PULL_2026_08_07_APP_PARITY_AUDIT.md §7.
   final List<OtSurgeryTypeOption> otSurgeryTypes;
+  // Active-only Lens Power master (web pull 2026-10-13) — "Estimated Power"
+  // became a "Lens Power" dropdown sourced from this list instead of a free
+  // numeric input.
+  final List<LensPowerItem> lensPowers;
 
   const OtCounsellingDetail({
     required this.booking,
@@ -190,6 +211,7 @@ class OtCounsellingDetail {
     this.consent,
     required this.packageCostOptions,
     required this.otSurgeryTypes,
+    this.lensPowers = const [],
   });
 
   factory OtCounsellingDetail.fromJson(Map<String, dynamic> j) => OtCounsellingDetail(
@@ -198,5 +220,6 @@ class OtCounsellingDetail {
         consent: j['consent'] != null ? OtConsentItem.fromJson(j['consent'] as Map<String, dynamic>) : null,
         packageCostOptions: (j['package_cost_options'] as List? ?? []).map((e) => OtPackageMasterItem.fromJson(e as Map<String, dynamic>)).toList(),
         otSurgeryTypes: (j['ot_surgery_types'] as List? ?? []).map((e) => OtSurgeryTypeOption.fromJson(e as Map<String, dynamic>)).toList(),
+        lensPowers: (j['lens_powers'] as List? ?? []).map((e) => LensPowerItem.fromJson(e as Map<String, dynamic>)).toList(),
       );
 }

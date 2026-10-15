@@ -1,8 +1,11 @@
+import '../utils/json_parse.dart';
+
 /// Laravel's `decimal:N` model casts serialize to JSON as a STRING (e.g.
 /// "1234.00"), not a number — every money/measurement field read from a raw
 /// (un-mapped) Eloquent model response needs this instead of a bare
 /// `as num?` cast. See OT_WEB_PARITY_FIX_PRD.md (decimal-cast gotcha).
-double? numOrStringToDouble(dynamic v) => switch (v) { num n => n.toDouble(), String s => double.tryParse(s), _ => null };
+/// Kept as a named alias so existing OT model imports keep working.
+double? numOrStringToDouble(dynamic v) => jsonDoubleOrNull(v);
 
 /// Fixed lens-type enum used across the OT module (lens inventory + the
 /// Phase 4 lens-detail form) — replaces the old placeholder A/B enum.
@@ -51,7 +54,7 @@ class LensInventoryItem {
   });
 
   factory LensInventoryItem.fromJson(Map<String, dynamic> j) => LensInventoryItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         lensCode: j['lens_code'] as String? ?? '',
         manufacturer: j['manufacturer'] as String?,
         lensName: j['lens_name'] as String? ?? '',
@@ -59,11 +62,11 @@ class LensInventoryItem {
         power: j['power']?.toString(),
         batchNumber: j['batch_number'] as String?,
         serialNumber: j['serial_number'] as String?,
-        mrp: numOrStringToDouble(j['mrp']) ?? 0,
-        purchaseCost: numOrStringToDouble(j['purchase_cost']),
+        mrp: jsonDoubleOrNull(j['mrp']) ?? 0,
+        purchaseCost: jsonDoubleOrNull(j['purchase_cost']),
         supplier: j['supplier'] as String?,
         expiryDate: j['expiry_date'] as String?,
-        availableStock: j['available_stock'] as int? ?? 0,
+        availableStock: jsonInt(j['available_stock']),
       );
 
   Map<String, dynamic> toJson() => {
@@ -82,20 +85,42 @@ class LensInventoryItem {
       };
 }
 
-/// `ot_lens_powers` table (Round 3 Phase 7) — "master + favourite" pattern,
-/// same shape as the existing eye-exam masters (`ExamMasterItem`).
+/// `ot_lens_powers` table — web field is `power` (numeric), not `value`.
+/// List display on web: `+{power} D` (e.g. +10.50 D).
 class LensPowerItem {
   final int id;
-  final String value;
+  final double power;
   final bool isFavourite;
+  final bool isActive;
 
-  const LensPowerItem({required this.id, required this.value, this.isFavourite = false});
+  const LensPowerItem({
+    required this.id,
+    required this.power,
+    this.isFavourite = false,
+    this.isActive = true,
+  });
 
-  factory LensPowerItem.fromJson(Map<String, dynamic> j) => LensPowerItem(
-        id: j['id'] as int,
-        value: j['value'] as String? ?? '',
-        isFavourite: j['is_favourite'] as bool? ?? false,
-      );
+  /// Web list cell: `+10.50 D`
+  String get displayLabel => '+${power.toStringAsFixed(2)} D';
+
+  /// Prefill edit field with bare number (web modal uses raw `power`).
+  String get editText =>
+      power == power.roundToDouble() ? '${power.toInt()}' : power.toStringAsFixed(2);
+
+  factory LensPowerItem.fromJson(Map<String, dynamic> j) {
+    final raw = j['power'] ?? j['value'];
+    final parsed = switch (raw) {
+      num n => n.toDouble(),
+      String s => double.tryParse(s.replaceAll(RegExp(r'[^0-9.\-]'), '')) ?? 0,
+      _ => 0.0,
+    };
+    return LensPowerItem(
+      id: jsonInt(j['id']),
+      power: parsed,
+      isFavourite: jsonBool(j['is_favourite']),
+      isActive: jsonBool(j['is_active'], fallback: true),
+    );
+  }
 }
 
 /// `ot_package_masters` table (Round 3 Phase 7) — feeds Phase 1's
@@ -109,6 +134,15 @@ class OtPackageMasterItem {
   final double surgeonCharges;
   final double nursingCharges;
   final double consumablesCharges;
+  // The Counselling form's package dropdown (`package_cost_options`) only
+  // ever returns `is_active = true` rows (API: OtCounsellorApiController::
+  // fetchCounsellingDetail()) — a package created without this field set
+  // silently defaults to inactive server-side and never appears there.
+  // Web's own Add-Package form has an "Active" checkbox that's checked by
+  // default; this app's form never had one at all, so this field was
+  // missing from the model too (unlike the sibling Lens Power/Lens Option
+  // masters, which already track it the same way LensPowerItem does).
+  final bool isActive;
 
   const OtPackageMasterItem({
     required this.id,
@@ -119,19 +153,21 @@ class OtPackageMasterItem {
     required this.surgeonCharges,
     required this.nursingCharges,
     required this.consumablesCharges,
+    this.isActive = true,
   });
 
   double get totalPreview => (lensCost ?? 0) + otCharges + surgeonCharges + nursingCharges + consumablesCharges;
 
   factory OtPackageMasterItem.fromJson(Map<String, dynamic> j) => OtPackageMasterItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         packageName: j['package_name'] as String? ?? '',
-        lensCost: numOrStringToDouble(j['lens_cost']),
+        lensCost: jsonDoubleOrNull(j['lens_cost']),
         roomCategory: j['room_category'] as String? ?? 'general',
-        otCharges: numOrStringToDouble(j['ot_charges']) ?? 0,
-        surgeonCharges: numOrStringToDouble(j['surgeon_charges']) ?? 0,
-        nursingCharges: numOrStringToDouble(j['nursing_charges']) ?? 0,
-        consumablesCharges: numOrStringToDouble(j['consumables_charges']) ?? 0,
+        otCharges: jsonDoubleOrNull(j['ot_charges']) ?? 0,
+        surgeonCharges: jsonDoubleOrNull(j['surgeon_charges']) ?? 0,
+        nursingCharges: jsonDoubleOrNull(j['nursing_charges']) ?? 0,
+        consumablesCharges: jsonDoubleOrNull(j['consumables_charges']) ?? 0,
+        isActive: jsonBool(j['is_active'], fallback: true),
       );
 }
 
@@ -145,9 +181,9 @@ class OtLensOptionItem {
   const OtLensOptionItem({required this.id, required this.name, this.isActive = true});
 
   factory OtLensOptionItem.fromJson(Map<String, dynamic> j) => OtLensOptionItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '',
-        isActive: j['is_active'] as bool? ?? true,
+        isActive: jsonBool(j['is_active'], fallback: true),
       );
 }
 
@@ -161,7 +197,7 @@ class OtTypeMasterItem {
   const OtTypeMasterItem({required this.id, required this.name});
 
   factory OtTypeMasterItem.fromJson(Map<String, dynamic> j) => OtTypeMasterItem(
-        id: j['id'] as int,
+        id: jsonInt(j['id']),
         name: j['name'] as String? ?? '',
       );
 }

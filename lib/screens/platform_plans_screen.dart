@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/app_refresh_indicator.dart';
 import '../constants/app_colors.dart';
 import '../constants/app_radius.dart';
 import '../constants/app_text_styles.dart';
@@ -7,7 +8,9 @@ import '../models/platform_plan_models.dart';
 import '../services/platform_plan_service.dart';
 import '../utils/app_decorations.dart';
 import '../widgets/app_animations.dart';
+import '../widgets/app_dialog.dart';
 import '../widgets/app_error_state.dart';
+import '../widgets/form_kit.dart';
 import '../widgets/app_section_header.dart';
 import '../widgets/skeleton.dart';
 
@@ -71,7 +74,7 @@ class _PlatformPlansScreenState extends State<PlatformPlansScreen> {
     if (_loading) return const AppSkeletonList(count: 4, itemHeight: 100);
     if (_error != null) return AppErrorState(message: _error!, onRetry: _load);
     final d = _data!;
-    return RefreshIndicator(
+    return AppRefreshIndicator(
       color: AppColors.primary,
       onRefresh: _load,
       child: SingleChildScrollView(
@@ -247,19 +250,19 @@ class _EditPlanDialogState extends State<_EditPlanDialog> {
     final ctrl = TextEditingController();
     showDialog(
       context: context,
-      builder: (_) => AlertDialog(
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)),
-        title: Text('Add Feature', style: AppTextStyles.headingSmall),
-        content: TextField(controller: ctrl, decoration: const InputDecoration(hintText: 'Feature description')),
+      builder: (ctx) => AppDialog(
+        size: AppDialogSize.small,
+        header: AppDialogHeader(icon: Icons.playlist_add_rounded, title: 'Add Feature', onClose: () => Navigator.pop(ctx)),
+        body: TextField(controller: ctrl, autofocus: true, decoration: appFieldDecoration('Feature', hint: 'Feature description')),
         actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-          TextButton(
+          AppSecondaryButton(onPressed: () => Navigator.pop(ctx)),
+          AppPrimaryButton(
+            label: 'Add',
             onPressed: () {
               final text = ctrl.text.trim();
               if (text.isNotEmpty) setState(() => _features.add(text));
-              Navigator.pop(context);
+              Navigator.pop(ctx);
             },
-            child: Text('Add', style: TextStyle(color: AppColors.primary, fontWeight: FontWeight.w800)),
           ),
         ],
       ),
@@ -268,70 +271,44 @@ class _EditPlanDialogState extends State<_EditPlanDialog> {
 
   @override
   Widget build(BuildContext context) {
-    return Dialog(
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.xl)),
-      child: SizedBox(
-        width: 480,
-        height: 640,
-        child: Form(
-          key: _formKey,
-          child: Column(
-            children: [
-              Padding(
-                padding: const EdgeInsets.fromLTRB(20, 18, 12, 8),
-                child: Row(children: [
-                  Expanded(child: Text('Edit Plan Pricing', style: AppTextStyles.headingSmall)),
-                  IconButton(icon: Icon(Icons.close_rounded, color: AppColors.textSecondary), onPressed: () => Navigator.pop(context)),
-                ]),
-              ),
-              Divider(color: AppColors.primaryA12, height: 1),
-              Expanded(
-                child: SingleChildScrollView(
-                  padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const AppSectionHeader(title: 'Pricing'),
-                      const SizedBox(height: 10),
-                      _field(_priceCtrl, 'Monthly Price (₹)', min: 1, max: 99999),
-                      const SizedBox(height: 10),
-                      Row(children: [Expanded(child: _field(_qDiscCtrl, 'Quarterly Discount %', min: 0, max: 70)), const SizedBox(width: 10), Expanded(child: _field(_yDiscCtrl, 'Yearly Discount %', min: 0, max: 70))]),
-                      const SizedBox(height: 16),
-                      const AppSectionHeader(title: 'Trial & Grace'),
-                      const SizedBox(height: 10),
-                      Row(children: [Expanded(child: _field(_trialCtrl, 'Trial Days', min: 1, max: 90)), const SizedBox(width: 10), Expanded(child: _field(_graceCtrl, 'Grace Days', min: 1, max: 30))]),
-                      const SizedBox(height: 16),
-                      AppSectionHeader(title: 'Features', trailing: IconButton(onPressed: _addFeature, icon: Icon(Icons.add_circle_outline_rounded, color: AppColors.primary, size: 22), tooltip: 'Add feature', padding: EdgeInsets.zero, constraints: const BoxConstraints())),
-                      const SizedBox(height: 6),
-                      ..._features.asMap().entries.map((e) => Container(
-                            margin: const EdgeInsets.only(bottom: 6),
-                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                            decoration: AppDecorations.card(),
-                            child: Row(children: [
-                              Icon(Icons.check_circle_outline_rounded, size: 16, color: AppColors.green),
-                              const SizedBox(width: 8),
-                              Expanded(child: Text(e.value, style: AppTextStyles.bodyMedium)),
-                              GestureDetector(onTap: () => setState(() => _features.removeAt(e.key)), child: Icon(Icons.close_rounded, size: 18, color: AppColors.textDisabled)),
-                            ]),
-                          )),
-                      const SizedBox(height: 20),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 50,
-                        child: ElevatedButton(
-                          onPressed: _saving ? null : _save,
-                          style: ElevatedButton.styleFrom(backgroundColor: AppColors.primary, foregroundColor: Colors.white, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(AppRadius.lg)), elevation: 0),
-                          child: _saving ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2.5, valueColor: AlwaysStoppedAnimation<Color>(Colors.white))) : const Text('Save Changes', style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800)),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
+    return AppDialog(
+      size: AppDialogSize.small,
+      header: AppDialogHeader(icon: Icons.sell_outlined, title: 'Edit Plan Pricing', onClose: _saving ? null : () => Navigator.pop(context)),
+      body: Form(
+        key: _formKey,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const AppSectionHeader(title: 'Pricing'),
+            const SizedBox(height: 10),
+            _field(_priceCtrl, 'Monthly Price (₹)', min: 1, max: 99999),
+            const SizedBox(height: 12),
+            AppFormRow(children: [_field(_qDiscCtrl, 'Quarterly Discount %', min: 0, max: 70), _field(_yDiscCtrl, 'Yearly Discount %', min: 0, max: 70)]),
+            const SizedBox(height: 16),
+            const AppSectionHeader(title: 'Trial & Grace'),
+            const SizedBox(height: 10),
+            AppFormRow(children: [_field(_trialCtrl, 'Trial Days', min: 1, max: 90), _field(_graceCtrl, 'Grace Days', min: 1, max: 30)]),
+            const SizedBox(height: 16),
+            AppSectionHeader(title: 'Features', trailing: IconButton(onPressed: _addFeature, icon: Icon(Icons.add_circle_outline_rounded, color: AppColors.primary, size: 22), tooltip: 'Add feature', padding: EdgeInsets.zero, constraints: const BoxConstraints())),
+            const SizedBox(height: 6),
+            ..._features.asMap().entries.map((e) => Container(
+                  margin: const EdgeInsets.only(bottom: 6),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: AppDecorations.card(),
+                  child: Row(children: [
+                    Icon(Icons.check_circle_outline_rounded, size: 16, color: AppColors.green),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(e.value, style: AppTextStyles.bodyMedium)),
+                    GestureDetector(onTap: () => setState(() => _features.removeAt(e.key)), child: Icon(Icons.close_rounded, size: 18, color: AppColors.textDisabled)),
+                  ]),
+                )),
+          ],
         ),
       ),
+      actions: [
+        AppSecondaryButton(onPressed: _saving ? null : () => Navigator.pop(context)),
+        AppPrimaryButton(label: 'Save Changes', loading: _saving, onPressed: _save),
+      ],
     );
   }
 
@@ -339,7 +316,7 @@ class _EditPlanDialogState extends State<_EditPlanDialog> {
     return TextFormField(
       controller: ctrl,
       keyboardType: TextInputType.number,
-      decoration: AppDecorations.inputDecoration(labelText: label),
+      decoration: appFieldDecoration(label),
       validator: (v) {
         final n = int.tryParse(v ?? '');
         if (n == null) return 'Required';

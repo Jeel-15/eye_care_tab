@@ -5,4 +5,5 @@ abstract final class MedicinesTab {
   static const int routeAdmin = 3;
   static const int medicines  = 4;
   static const int groups     = 5;
+  static const int ward       = 6;
 }

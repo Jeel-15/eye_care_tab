@@ -23,6 +23,68 @@ List<OtReportTypeGroup> parseOtReportGroups(Map<String, dynamic> data) => data.e
         ))
     .toList();
 
+/// `GET /reports/ot/lens-report` — dedicated page (summary cards +
+/// lens-power breakdown), not the generic headings/rows `OtReportResult`.
+/// Mirrors web's `OtReportController::buildLensReportData()`.
+class OtLensReportSummary {
+  final int totalLensesUsed;
+  final int totalSurgeries;
+  final int uniquePowers;
+
+  const OtLensReportSummary({
+    required this.totalLensesUsed,
+    required this.totalSurgeries,
+    required this.uniquePowers,
+  });
+
+  factory OtLensReportSummary.fromJson(Map<String, dynamic> j) => OtLensReportSummary(
+        totalLensesUsed: (j['totalLensesUsed'] as num?)?.toInt() ?? 0,
+        totalSurgeries: (j['totalSurgeries'] as num?)?.toInt() ?? 0,
+        uniquePowers: (j['uniquePowers'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class OtLensPowerBreakdownRow {
+  final String power;
+  final int quantity;
+
+  const OtLensPowerBreakdownRow({required this.power, required this.quantity});
+
+  factory OtLensPowerBreakdownRow.fromJson(Map<String, dynamic> j) => OtLensPowerBreakdownRow(
+        power: j['power'] as String? ?? '-',
+        quantity: (j['quantity'] as num?)?.toInt() ?? 0,
+      );
+}
+
+class OtLensReportData {
+  final String from;
+  final String to;
+  final OtLensReportSummary summary;
+  final List<OtLensPowerBreakdownRow> powerSummary;
+  final List<String> detailHeadings;
+  final List<List<dynamic>> detailRows;
+
+  const OtLensReportData({
+    required this.from,
+    required this.to,
+    required this.summary,
+    required this.powerSummary,
+    required this.detailHeadings,
+    required this.detailRows,
+  });
+
+  factory OtLensReportData.fromJson(Map<String, dynamic> j) => OtLensReportData(
+        from: j['from'] as String? ?? '',
+        to: j['to'] as String? ?? '',
+        summary: OtLensReportSummary.fromJson(j['summary'] as Map<String, dynamic>? ?? const {}),
+        powerSummary: (j['power_summary'] as List? ?? [])
+            .map((e) => OtLensPowerBreakdownRow.fromJson(e as Map<String, dynamic>))
+            .toList(),
+        detailHeadings: (j['detail_headings'] as List? ?? []).map((e) => e.toString()).toList(),
+        detailRows: (j['detail_rows'] as List? ?? []).map((r) => r as List<dynamic>).toList(),
+      );
+}
+
 /// `GET /reports/ot/{type}` result — a plain heading/rows table.
 class OtReportResult {
   final String type;

@@ -19,8 +19,18 @@ class OtAssistantService with AuthenticatedService {
 
   Map<String, dynamic> _parse(http.Response res) => parseApiResponse(res);
 
-  Future<({List<OtBookingSummary> items, OtPaginationMeta meta})> fetchBookings({int page = 1, int perPage = 25}) async {
-    final uri = Uri.parse('$_base/ot/assistant/bookings').replace(queryParameters: {'page': '$page', 'per_page': '$perPage'});
+  /// [filter]: `queue` (ready for surgery) or `history` ("Surgery History"
+  /// — operated/discharged, date-ranged via [fromDate]/[toDate] — web pull
+  /// 2026-09-19 Queue/All toggle, `FiltersOtDeskLists` trait).
+  Future<({List<OtBookingSummary> items, OtPaginationMeta meta})> fetchBookings({String filter = 'queue', String? fromDate, String? toDate, int? assistantId, int page = 1, int perPage = 25}) async {
+    final uri = Uri.parse('$_base/ot/assistant/bookings').replace(queryParameters: {
+      'filter': filter,
+      if (fromDate != null) 'from_date': fromDate,
+      if (toDate != null) 'to_date': toDate,
+      if (assistantId != null && assistantId > 0) 'assistant_id': '$assistantId',
+      'page': '$page',
+      'per_page': '$perPage',
+    });
     final res = await http.get(uri, headers: await headers).timeout(AppConfig.requestTimeout);
     final body = _parse(res);
     final data = body['data'] as Map<String, dynamic>;
@@ -56,6 +66,7 @@ class OtAssistantService with AuthenticatedService {
     String? lensType,
     double? estimatedPower,
     double? lensCost,
+    String? lensImplantation,
   }) async {
     final res = await http
         .post(
@@ -79,6 +90,7 @@ class OtAssistantService with AuthenticatedService {
             'lens_type': lensType,
             'estimated_power': estimatedPower,
             'lens_cost': lensCost,
+            'lens_implantation': lensImplantation,
           }),
         )
         .timeout(AppConfig.requestTimeout);

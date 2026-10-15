@@ -65,6 +65,7 @@ class ReportService with AuthenticatedService {
     final client = http.Client();
     try {
       final streamedRes = await client.send(req).timeout(const Duration(seconds: 120));
+      syncPermissionsVersion(streamedRes.headers, statusCode: streamedRes.statusCode);
       if (streamedRes.statusCode != 200) {
         throw Exception('Export failed (${streamedRes.statusCode})');
       }
