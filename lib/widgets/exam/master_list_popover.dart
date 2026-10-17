@@ -13,6 +13,8 @@ class MasterListPopover extends StatefulWidget {
   final String current;
   final bool showFavourites;
   final bool grid;
+  final int gridColumns;
+  final double gridAspectRatio;
   final void Function(String value) onSelect;
   final Future<bool> Function(ExamMasterItem item)? onToggleFavourite; // returns new isFavourite
   final VoidCallback onClose;
@@ -26,6 +28,8 @@ class MasterListPopover extends StatefulWidget {
     required this.onClose,
     this.showFavourites = false,
     this.grid = false,
+    this.gridColumns = 4,
+    this.gridAspectRatio = 1.3,
     this.onToggleFavourite,
   });
 
@@ -110,7 +114,7 @@ class _MasterListPopoverState extends State<MasterListPopover> {
         // 2nd line with ellipsis, since VN values vary a lot in length
         // ("6/6" vs "HM/PL/PR inacc."), unlike the mostly-short/plain
         // values this was first built against.
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 4, mainAxisSpacing: 5, crossAxisSpacing: 5, childAspectRatio: 1.3),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: widget.gridColumns, mainAxisSpacing: 5, crossAxisSpacing: 5, childAspectRatio: widget.gridAspectRatio),
         itemCount: items.length,
         itemBuilder: (_, i) {
           final it = items[i];

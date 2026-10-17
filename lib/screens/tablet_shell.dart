@@ -10,6 +10,7 @@ import '../services/patient_service.dart';
 import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/coming_soon_pane.dart';
+import '../widgets/dash_tab_switch.dart';
 import '../widgets/permission_guard.dart';
 import '../widgets/secret_tap_area.dart';
 import '../utils/refreshable.dart';
@@ -505,6 +506,12 @@ class _TabletShellState extends State<TabletShell> with WidgetsBindingObserver {
         backgroundColor: AppColors.primary,
         foregroundColor: Colors.white,
         title: Text(widget.hospital.name),
+        actions: [
+          if (_isDoctor && _selected == 'dashboard') ...[
+            const DoctorDashTabSwitch(),
+            const SizedBox(width: 12),
+          ],
+        ],
       ),
       drawer: Drawer(
         width: TabletSpacing.railWidthExpanded,
@@ -985,7 +992,11 @@ class _DoctorTopBar extends StatelessWidget {
             },
           ),
         ),
-        const SizedBox(width: 24),
+        const SizedBox(width: 12),
+        if (selected == 'dashboard') ...[
+          const DoctorDashTabSwitch(),
+          const SizedBox(width: 16),
+        ],
         _DoctorAvatarMenu(user: user, onDark: true, onProfile: onProfile, onLogout: onLogout),
       ]),
     );

@@ -15,6 +15,7 @@ import '../constants/permissions.dart';
 import '../services/permission_service.dart';
 import '../widgets/app_animations.dart';
 import '../widgets/exam/advice_picker.dart';
+import '../widgets/exam/diagnosis_grouped_chips.dart';
 import '../widgets/exam/exam_field_widgets.dart';
 import '../widgets/exam/exam_live_slip.dart';
 import '../widgets/exam/exam_section_sheet.dart';
@@ -1839,6 +1840,13 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
       if (eye == 're' && key == chainKeys.first) _autoOpenFirstField(fn);
     }
 
+    String pickerTitle(String eye, String key, bool isSt) {
+      const names = {'ds': 'SPH', 'dc': 'CYL', 'ax': 'Axis', 'vn': 'VN', 'ns': 'Near SPH', 'nc': 'Near CYL', 'na': 'Near Axis', 'near_vn': 'Near VN'};
+      final field = key == 'vn' ? (isSt ? 'VN C ST' : 'VN C GL') : (names[key] ?? key);
+      return '$field  ·  ${eye == 're' ? 'Right Eye (RE)' : 'Left Eye (LE)'}  ·  ${isSt ? 'ST' : 'PG'}';
+    }
+
+
     Widget cellFor(String eye, String key) {
       final isSph = key == 'ds' || key == 'ns';
       final isCyl = key == 'dc' || key == 'nc';
@@ -1850,6 +1858,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
       if (isSph || isCyl) {
         return ChipPickerField(
           controller: data[eye]![key]!,
+          title: pickerTitle(eye, key, isSt),
           items: sphCyl,
           isSignField: true,
           onChanged: () => setState(() {}),
@@ -1860,6 +1869,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
       if (isAxis) {
         return ChipPickerField(
           controller: data[eye]![key]!,
+          title: pickerTitle(eye, key, isSt),
           items: axis,
           isSignField: false,
           disabled: _axisDisabled(data[eye]!['dc']!.text),
@@ -1870,6 +1880,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
       if (isVn || isNearVn) {
         return ChipPickerField(
           controller: data[eye]![key]!,
+          title: pickerTitle(eye, key, isSt),
           items: isNearVn ? nrvn : vn,
           isSignField: false,
           exposeOpener: (fn) => registerOpener(eye, key, fn),
@@ -2029,6 +2040,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
       children: [
         ChipPickerField(
           controller: addCtrl,
+          title: 'Add  ·  ${eye == 're' ? 'Right Eye (RE)' : 'Left Eye (LE)'}  ·  ST',
           items: _formData?.masters.sphCyl ?? [],
           isSignField: true,
           exposeOpener: exposeOpener,
@@ -2545,10 +2557,6 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
                 ),
               )
               .toList();
-    final sorted = [
-      ...filtered.where((d) => d.isFavourite),
-      ...filtered.where((d) => !d.isFavourite),
-    ];
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2592,7 +2600,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
           onChanged: (v) => setState(() => _diagnosisSearch = v),
         ),
         const SizedBox(height: 8),
-        if (sorted.isEmpty)
+        if (filtered.isEmpty)
           Text(
             _diagnosisSearch.isEmpty
                 ? 'No diagnoses available'
@@ -2604,10 +2612,10 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
             ),
           )
         else
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: sorted.map((d) {
+          DiagnosisGroupedChips(
+            items: filtered,
+            selectedIds: _selectedDiagnosisIds,
+            chipBuilder: (d) {
               final sel = _selectedDiagnosisIds.contains(d.id);
               return Container(
                 decoration: BoxDecoration(
@@ -2698,7 +2706,7 @@ class _SecondaryExamScreenState extends State<SecondaryExamScreen> {
                   ),
                 ),
               );
-            }).toList(),
+            },
           ),
       ],
     );

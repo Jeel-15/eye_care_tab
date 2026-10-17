@@ -47,40 +47,26 @@ class OtDoctorCardInfo {
   final int id;
   final String name;
   final bool isSelf;
-  final int otTotal;
-  final int otPending;
-  final int otComplete;
+  final int otCounterPending;
+  final int otPaymentComplete;
+  final int otDischarged;
 
   const OtDoctorCardInfo({
     required this.id,
     required this.name,
     required this.isSelf,
-    required this.otTotal,
-    required this.otPending,
-    required this.otComplete,
+    required this.otCounterPending,
+    required this.otPaymentComplete,
+    required this.otDischarged,
   });
 
   factory OtDoctorCardInfo.fromJson(Map<String, dynamic> j) => OtDoctorCardInfo(
         id:         (j['id'] as num).toInt(),
         name:       j['name'] as String? ?? '',
         isSelf:     j['is_self'] == true,
-        otTotal:    (j['ot_total'] as num?)?.toInt() ?? 0,
-        otPending:  (j['ot_pending'] as num?)?.toInt() ?? 0,
-        otComplete: (j['ot_complete'] as num?)?.toInt() ?? 0,
-      );
-}
-
-class OtSummary {
-  final int total;
-  final int pending;
-  final int complete;
-
-  const OtSummary({required this.total, required this.pending, required this.complete});
-
-  factory OtSummary.fromJson(Map<String, dynamic>? j) => OtSummary(
-        total:    (j?['total'] as num?)?.toInt() ?? 0,
-        pending:  (j?['pending'] as num?)?.toInt() ?? 0,
-        complete: (j?['complete'] as num?)?.toInt() ?? 0,
+        otCounterPending:  (j['ot_counter_pending']  as num?)?.toInt() ?? 0,
+        otPaymentComplete: (j['ot_payment_complete'] as num?)?.toInt() ?? 0,
+        otDischarged:      (j['ot_discharged']       as num?)?.toInt() ?? 0,
       );
 }
 
@@ -100,6 +86,7 @@ class OtQueueItem {
   final String statusLabel;
   final String statusTone;
   final bool isConsultPending;
+  final String? assistantName;
 
   const OtQueueItem({
     required this.id,
@@ -112,6 +99,7 @@ class OtQueueItem {
     required this.statusLabel,
     required this.statusTone,
     required this.isConsultPending,
+    this.assistantName,
   });
 
   factory OtQueueItem.fromJson(Map<String, dynamic> j) => OtQueueItem(
@@ -125,6 +113,7 @@ class OtQueueItem {
         statusLabel:  j['status_label'] as String? ?? '',
         statusTone:   j['status_tone'] as String? ?? '#64748b',
         isConsultPending: j['is_consult_pending'] == true,
+        assistantName: j['ot_assistant_name'] as String?,
       );
 }
 
@@ -246,11 +235,13 @@ class WaitThresholds {
   }
 }
 
+List<OtQueueItem> _otQueue(dynamic v) =>
+    (v as List<dynamic>? ?? []).map((e) => OtQueueItem.fromJson(e as Map<String, dynamic>)).toList();
+
 class DoctorDashboardData {
   final DoctorDashStats stats;
   final List<DoctorCardInfo> doctorCards;
   final List<OtDoctorCardInfo> otDoctorCards;
-  final OtSummary otSummary;
   final DoctorCardInfo? viewingDoctor;
   final List<PrimaryPatient> primaryQueue;
   final List<SecondaryPatient> secondaryQueue;
@@ -266,17 +257,18 @@ class DoctorDashboardData {
   final WaitThresholds waitThresholds;
 
   // OT tab (OPD/OT dashboard switch, web pull 2026-10-13).
-  final List<OtQueueItem> otPendingQueue;
-  final List<OtQueueItem> otCompletedQueue;
-  final int todayOtWalkins;
-  final int todayPaymentPending;
-  final int todayDischargeCounter;
+  final List<OtQueueItem> otPaymentPendingQueue;
+  final List<OtQueueItem> otWardQueue;
+  final List<OtQueueItem> otAssistantQueue;
+  final int todayOtCounterPending;
+  final int todayPaymentComplete;
+  final int todayDischarged;
+  final int todayOtAppointmentsAdded;
 
   const DoctorDashboardData({
     required this.stats,
     required this.doctorCards,
     this.otDoctorCards = const [],
-    this.otSummary = const OtSummary(total: 0, pending: 0, complete: 0),
     this.viewingDoctor,
     required this.primaryQueue,
     required this.secondaryQueue,
@@ -285,11 +277,13 @@ class DoctorDashboardData {
     this.tenantTodaySecondary = 0,
     this.tenantTodayOtPipeline = 0,
     this.waitThresholds = WaitThresholds.defaults,
-    this.otPendingQueue = const [],
-    this.otCompletedQueue = const [],
-    this.todayOtWalkins = 0,
-    this.todayPaymentPending = 0,
-    this.todayDischargeCounter = 0,
+    this.otPaymentPendingQueue = const [],
+    this.otWardQueue = const [],
+    this.otAssistantQueue = const [],
+    this.todayOtCounterPending = 0,
+    this.todayPaymentComplete = 0,
+    this.todayDischarged = 0,
+    this.todayOtAppointmentsAdded = 0,
   });
 
   factory DoctorDashboardData.fromJson(Map<String, dynamic> j) => DoctorDashboardData(
@@ -300,7 +294,6 @@ class DoctorDashboardData {
         otDoctorCards: (j['ot_doctor_cards'] as List<dynamic>? ?? [])
             .map((e) => OtDoctorCardInfo.fromJson(e as Map<String, dynamic>))
             .toList(),
-        otSummary: OtSummary.fromJson(j['ot_summary'] as Map<String, dynamic>?),
         viewingDoctor: j['viewing_doctor'] != null
             ? DoctorCardInfo.fromJson(j['viewing_doctor'] as Map<String, dynamic>)
             : null,
@@ -315,14 +308,12 @@ class DoctorDashboardData {
         tenantTodaySecondary: (j['tenant_today_secondary'] as num?)?.toInt() ?? 0,
         tenantTodayOtPipeline: (j['tenant_today_ot_pipeline'] as num?)?.toInt() ?? 0,
         waitThresholds: WaitThresholds.fromJson(j['wait_thresholds'] as Map<String, dynamic>?),
-        otPendingQueue: (j['ot_pending_queue'] as List<dynamic>? ?? [])
-            .map((e) => OtQueueItem.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        otCompletedQueue: (j['ot_completed_queue'] as List<dynamic>? ?? [])
-            .map((e) => OtQueueItem.fromJson(e as Map<String, dynamic>))
-            .toList(),
-        todayOtWalkins:        (j['today_ot_walkins']        as num?)?.toInt() ?? 0,
-        todayPaymentPending:   (j['today_payment_pending']   as num?)?.toInt() ?? 0,
-        todayDischargeCounter:(j['today_discharge_counter']as num?)?.toInt() ?? 0,
+        otPaymentPendingQueue: _otQueue(j['ot_payment_pending_queue']),
+        otWardQueue:           _otQueue(j['ot_ward_queue']),
+        otAssistantQueue:      _otQueue(j['ot_assistant_queue']),
+        todayOtCounterPending:    (j['today_ot_counter_pending']    as num?)?.toInt() ?? 0,
+        todayPaymentComplete:     (j['today_payment_complete']      as num?)?.toInt() ?? 0,
+        todayDischarged:          (j['today_discharged']            as num?)?.toInt() ?? 0,
+        todayOtAppointmentsAdded: (j['today_ot_appointments_added'] as num?)?.toInt() ?? 0,
       );
 }

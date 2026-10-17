@@ -18,8 +18,11 @@ class SignGridPopover extends StatefulWidget {
   final String current;
   final void Function(String value) onApply;
   final VoidCallback onClose;
+  /// Which field this is picking for (e.g. "SPH · Right Eye · PG") — shown
+  /// in the header when set.
+  final String? title;
 
-  const SignGridPopover({super.key, required this.items, required this.current, required this.onApply, required this.onClose});
+  const SignGridPopover({super.key, required this.items, required this.current, required this.onApply, required this.onClose, this.title});
 
   @override
   State<SignGridPopover> createState() => _SignGridPopoverState();
@@ -56,7 +59,14 @@ class _SignGridPopoverState extends State<SignGridPopover> {
         Padding(
           padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
           child: Row(children: [
-            Expanded(child: Text(_sign == '-' ? '− Negative Values' : '+ Positive Values', style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppColors.primary))),
+            Expanded(
+              child: Text(
+                widget.title != null
+                    ? '${widget.title}  ·  ${_sign == '-' ? '− Negative' : '+ Positive'}'
+                    : (_sign == '-' ? '− Negative Values' : '+ Positive Values'),
+                style: TextStyle(fontSize: widget.title != null ? 15 : 12, fontWeight: FontWeight.w800, color: AppColors.primary),
+              ),
+            ),
             IconButton(icon: const Icon(Icons.close_rounded, size: 16), padding: EdgeInsets.zero, constraints: const BoxConstraints(), onPressed: widget.onClose),
           ]),
         ),

@@ -273,63 +273,66 @@ class ChipPickerField extends StatefulWidget {
   /// See TextPickerField.exposeOpener — lets a row builder trigger this
   /// field's popover programmatically for chain-advance.
   final void Function(VoidCallback open)? exposeOpener;
+  /// Header text of the floating picker, naming the field being filled
+  /// (e.g. "SPH · Right Eye · PG").
+  final String? title;
 
-  const ChipPickerField({super.key, required this.controller, required this.items, required this.isSignField, this.disabled = false, this.onChanged, this.onFinalPick, this.exposeOpener});
+  const ChipPickerField({super.key, required this.controller, required this.items, required this.isSignField, this.disabled = false, this.onChanged, this.onFinalPick, this.exposeOpener, this.title});
 
   @override
   State<ChipPickerField> createState() => _ChipPickerFieldState();
 }
 
 class _ChipPickerFieldState extends State<ChipPickerField> {
-  final _popover = PopoverController();
 
-  @override
-  void dispose() {
-    _popover.dispose();
-    super.dispose();
-  }
-
-  // Client request (2026-10-07): both pickers were cramped enough to need
-  // real scrolling for a full value set — bumped from 300x380 (SPH/CYL)
-  // and the unset 340x420 default (Axis/VN) to one bigger shared size
-  // (400x520). That "needed scrolling" problem was actually a scroll-
-  // mechanics bug (MasterListPopover's grid/list didn't get a real bounded
-  // height to scroll within — fixed 2026-10-14), not something the popover
-  // needed to be huge to work around. Client report, same day, on the
-  // now-oversized result: shrunk back down near the original baseline —
-  // small and reliably scrollable beats big and cramped either way.
-  static const double _popoverWidth = 320;
-  static const double _popoverMaxHeight = 400;
-
+  // Client request (2026-10-17): the small anchored popover (320x400) forced
+  // scrolling for the full SPH/CYL/Axis/VN value sets, so these pickers now
+  // open as a large centred floating dialog instead — header names the field
+  // being filled, Axis/VN show 9 values per row.
   void _open() {
     if (widget.disabled) return;
-    if (widget.isSignField) {
-      _popover.show(context, (ctx) => SignGridPopover(
-            items: widget.items,
-            current: widget.controller.text,
-            onApply: (v) {
-              setState(() { widget.controller.text = v; widget.onChanged?.call(); });
-              widget.onFinalPick?.call();
-            },
-            onClose: _popover.close,
-          ), width: _popoverWidth, maxHeight: _popoverMaxHeight);
-    } else {
-      if (widget.items.isEmpty) return;
-      _popover.show(context, (ctx) => MasterListPopover(
-            items: widget.items,
-            title: 'Select value',
-            current: widget.controller.text,
-            // Client request (2026-10-07): Axis/VN opened as a single-column
-            // list (MasterListPopover's `grid` already existed and was just
-            // never passed here) — same small-box grid SPH/CYL already uses.
-            grid: true,
-            onSelect: (v) {
-              setState(() { widget.controller.text = v; widget.onChanged?.call(); });
-              widget.onFinalPick?.call();
-            },
-            onClose: _popover.close,
-          ), width: _popoverWidth, maxHeight: _popoverMaxHeight);
-    }
+    if (!widget.isSignField && widget.items.isEmpty) return;
+    final screen = MediaQuery.of(context).size;
+    final width = (screen.width * 0.88).clamp(360.0, 900.0);
+    final height = (screen.height * 0.85).clamp(360.0, 680.0);
+    showDialog<void>(
+      context: context,
+      builder: (ctx) {
+        void close() => Navigator.of(ctx).maybePop();
+        return Dialog(
+          insetPadding: const EdgeInsets.all(16),
+          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+          clipBehavior: Clip.antiAlias,
+          child: ConstrainedBox(
+            constraints: BoxConstraints(maxWidth: width, maxHeight: height),
+            child: widget.isSignField
+                ? SignGridPopover(
+                    items: widget.items,
+                    current: widget.controller.text,
+                    title: widget.title,
+                    onApply: (v) {
+                      setState(() { widget.controller.text = v; widget.onChanged?.call(); });
+                      widget.onFinalPick?.call();
+                    },
+                    onClose: close,
+                  )
+                : MasterListPopover(
+                    items: widget.items,
+                    title: widget.title ?? 'Select value',
+                    current: widget.controller.text,
+                    grid: true,
+                    gridColumns: 9,
+                    gridAspectRatio: 1.5,
+                    onSelect: (v) {
+                      setState(() { widget.controller.text = v; widget.onChanged?.call(); });
+                      widget.onFinalPick?.call();
+                    },
+                    onClose: close,
+                  ),
+          ),
+        );
+      },
+    );
   }
 
   @override
@@ -351,16 +354,13 @@ class _ChipPickerFieldState extends State<ChipPickerField> {
       bd = isEmpty ? Colors.grey.shade300 : AppColors.primaryA40;
       fg = isEmpty ? Colors.grey.shade400 : AppColors.primary;
     }
-    return CompositedTransformTarget(
-      link: _popover.link,
-      child: PressScaleWrapper(
-        onTap: _open,
-        child: Container(
-          height: 38,
-          decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.sm), border: Border.all(color: bd)),
-          alignment: Alignment.center,
-          child: Text(isEmpty ? '—' : t, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
-        ),
+    return PressScaleWrapper(
+      onTap: _open,
+      child: Container(
+        height: 38,
+        decoration: BoxDecoration(color: bg, borderRadius: BorderRadius.circular(AppRadius.sm), border: Border.all(color: bd)),
+        alignment: Alignment.center,
+        child: Text(isEmpty ? '—' : t, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: fg)),
       ),
     );
   }
